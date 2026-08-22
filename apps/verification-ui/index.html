@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gig Worker Verification</title>
+    <link rel="stylesheet" href="/styles.css?v=20260820-2" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark">K</span><span>Keystone Verify</span></div>
+        <span class="environment"><i></i> Local sandbox</span>
+      </header>
+
+      <section class="hero">
+        <div>
+          <p class="eyebrow">GIG WORKER VERIFICATION</p>
+          <h1>Gig worker verification</h1>
+          <p class="hero-copy">One guided form for identity, address, vehicle, employment and risk checks. Required checks run first; optional checks run only when the worker provides the information and consent.</p>
+        </div>
+        <div class="flow-pill"><span>UI</span><b>→</b><span>NestJS</span><b>→</b><span>BullMQ</span><b>→</b><span>Surepass</span></div>
+      </section>
+
+      <section class="workspace">
+        <form id="application-form" class="panel form-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">1 / START VERIFICATION</p><h2>Worker verification</h2></div>
+            <span class="method-badge">POST /worker-verifications</span>
+          </div>
+
+          <div class="check-strip" aria-label="Verification checks included in this form">
+            <div><span class="check-strip-title">Core checks</span><span class="check-chip core-chip">PAN</span><span class="check-chip core-chip">Driving licence</span><span class="check-chip core-chip">Address</span></div>
+            <div><span class="check-strip-title">Optional checks</span><span class="check-chip">Voter ID</span><span class="check-chip">RC V2</span><span class="check-chip">Passport</span><span class="check-chip">Face</span><span class="check-chip">Employment</span><span class="check-chip">Court</span><span class="check-chip">CIBIL</span></div>
+          </div>
+
+          <section class="form-section required-section">
+            <div class="form-section-heading"><div><span class="section-number">01</span><div><h3>Required worker details</h3><p>These details are needed to start the core identity verification.</p></div></div><span class="requirement-badge required-badge">Required</span></div>
+            <div class="field-grid">
+              <label>Full name<input name="name" value="Example User" required /></label>
+              <label>Date of birth<input name="dob" type="date" value="1995-01-01" required /></label>
+              <label>Mobile number<input name="mobile" value="9876543210" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" required /></label>
+              <label>PAN number<input name="pan" value="ABCPD1234F" pattern="[A-Za-z]{5}[0-9]{4}[A-Za-z]" required /></label>
+              <label>Driving licence number<input name="driving_license" value="KA0120230000000" required /></label>
+              <label>Driving licence date of birth<input name="driving_license_dob" type="date" value="1995-01-01" required /></label>
+              <label class="wide-field">Submitted address<textarea name="submitted_address" rows="3" required>House 12, MG Road, Raipur, Chhattisgarh</textarea></label>
+            </div>
+          </section>
+
+          <section class="form-section optional-section">
+            <div class="form-section-heading"><div><span class="section-number">02</span><div><h3>Additional verification checks</h3><p>Add only the information needed for this worker’s role or client package.</p></div></div><span class="requirement-badge optional-badge">Optional</span></div>
+            <div class="field-grid">
+              <label>Father/guardian name <span class="field-hint">eCourts search</span><input name="father_name" placeholder="Enter father or guardian name" /></label>
+              <label>UAN <span class="field-hint">Employment History by UAN V2</span><input name="uan" inputmode="numeric" pattern="[0-9]{12}" maxlength="12" placeholder="12-digit UAN" /></label>
+              <label>Voter ID / EPIC <span class="field-hint">Voter ID check</span><input name="voter_id" placeholder="Enter EPIC number if available" /></label>
+              <label>Vehicle registration <span class="field-hint">RC V2: insurance, PUC, permit, fitness</span><input name="vehicle_registration_number" placeholder="e.g. CG04AB1234" /></label>
+              <label>Passport file number <span class="field-hint">Passport Details</span><input name="passport_file_number" placeholder="Enter passport file number" /></label>
+              <label>Gender <span class="field-hint">CIBIL requires gender</span><select name="gender"><option value="">Skip CIBIL check</option><option value="male">Male</option><option value="female">Female</option></select></label>
+              <label>Case search year <span class="field-hint">eCourts</span><input name="criminal_year" inputmode="numeric" maxlength="4" placeholder="e.g. 2020" /></label>
+              <label>Case search state <span class="field-hint">eCourts</span><input name="criminal_state" placeholder="e.g. Maharashtra" /></label>
+              <label>Aadhaar e-Aadhaar PDF <span class="field-hint">Currently inactive in Sandbox</span><input name="aadhaar_file" type="file" accept="application/pdf,.pdf" /></label>
+              <label>Selfie <span class="field-hint">Face liveness and match</span><input name="selfie" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" /></label>
+              <label>ID card image <span class="field-hint">Face match reference</span><input name="id_card" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" /></label>
+            </div>
+          </section>
+
+          <div class="scenario-box worker-consent">
+            <div>
+              <p class="eyebrow">CONSENT & DATA COLLECTION</p>
+              <h3>Worker consent is required</h3>
+              <p>Consent controls which checks are created. Documents and personal data are sent from NestJS to Surepass; the browser never receives the provider token.</p>
+            </div>
+            <div class="consent-list">
+              <label class="checkbox-line consent-check"><input name="consent" type="checkbox" value="Y" required /> I agree to let Keystone process my identity details for gig-worker verification.</label>
+              <label class="checkbox-line consent-check"><input name="address_consent" type="checkbox" value="Y" required /> I agree to let Keystone compare my submitted address with my verified document address.</label>
+              <label class="checkbox-line consent-check"><input name="credit_consent" type="checkbox" value="Y" /> I agree to the optional CIBIL credit-score check.</label>
+              <label class="checkbox-line consent-check"><input name="biometric_consent" type="checkbox" value="Y" /> I agree to the optional selfie liveness and face-match checks.</label>
+              <label class="checkbox-line consent-check"><input name="criminal_consent" type="checkbox" value="Y" /> I agree to the optional court-record search.</label>
+            </div>
+          </div>
+
+          <button id="submit-button" class="primary-button" type="submit"><span>Start worker verification</span><b>↗</b></button>
+          <p id="form-message" class="form-message" role="status"></p>
+        </form>
+
+        <section class="panel status-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">2 / LIVE STATUS</p><h2>Verification run</h2></div>
+            <span id="application-status" class="status-chip neutral">Waiting</span>
+          </div>
+          <div id="empty-state" class="empty-state"><div class="empty-icon">◎</div><h3>No run yet</h3><p>Submit the form to see each background job move from queued to its final result.</p></div>
+          <div id="result-state" class="result-state" hidden>
+            <div class="application-line"><span>Application ID</span><code id="application-id">—</code></div>
+            <div id="verification-summary" class="verification-summary">
+              <div class="verification-summary-head"><span>Verification checkpoints</span><strong id="verification-progress-text">0 / 0 completed</strong></div>
+              <div class="progress-track"><div id="verification-progress-bar" class="progress-bar"></div></div>
+              <div class="checkpoint-grid">
+                <div class="checkpoint queued"><i></i><span>Queued</span><strong id="queued-count">0</strong></div>
+                <div class="checkpoint processing"><i></i><span>Processing</span><strong id="processing-count">0</strong></div>
+                <div class="checkpoint verified"><i></i><span>Verified</span><strong id="verified-count">0</strong></div>
+                <div class="checkpoint failed"><i></i><span>Failed</span><strong id="failed-count">0</strong></div>
+                <div class="checkpoint review"><i></i><span>Manual review</span><strong id="review-count">0</strong></div>
+              </div>
+            </div>
+            <div id="verification-list" class="verification-list"></div>
+            <div class="refresh-line"><span id="last-updated">Waiting for jobs…</span><button id="refresh-button" class="text-button" type="button">Refresh now</button></div>
+          </div>
+        </section>
+      </section>
+
+      <details class="developer-tools">
+        <summary><span><b>Developer sandbox</b><small>Run individual provider tests without using the worker form</small></span><strong>Open tools</strong></summary>
+      <section class="panel quick-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">QUICK SUREPASS TESTS</p><h2>Test one provider API</h2></div>
+          <span class="method-badge">No JSON required</span>
+        </div>
+        <p class="gst-copy">Use these simple forms to test Surepass directly. The API token stays on the NestJS server.</p>
+        <div class="quick-grid">
+          <form id="license-form" class="quick-card">
+            <div class="quick-card-heading"><h3>Driving Licence</h3><span>2 fields</span></div>
+            <label>Driving licence number<input name="id_number" value="UP2020150000000" required /></label>
+            <label>Date of birth<input name="dob" type="date" value="1996-11-23" required /></label>
+            <button id="license-button" class="primary-button" type="submit"><span>Test Driving Licence</span><b>↗</b></button>
+            <p id="license-message" class="form-message" role="status"></p>
+            <details id="license-result-details" class="quick-result-details" hidden><summary>View result details</summary><div id="license-result"></div></details>
+          </form>
+
+          <form id="pan-form" class="quick-card">
+            <div class="quick-card-heading"><h3>PAN Comprehensive</h3><span>1 field</span></div>
+            <label>PAN number<input name="id_number" value="EKRPR1234F" pattern="[A-Za-z]{5}[0-9]{4}[A-Za-z]" required /></label>
+            <input type="hidden" name="masked_aadhaar_variant" value="empty" />
+            <button id="pan-button" class="primary-button" type="submit"><span>Test PAN</span><b>↗</b></button>
+            <p id="pan-message" class="form-message" role="status"></p>
+            <details id="pan-result-details" class="quick-result-details" hidden><summary>View result details</summary><div id="pan-result"></div></details>
+          </form>
+
+          <form id="voter-form" class="quick-card">
+            <div class="quick-card-heading"><h3>Voter ID</h3><span>3 fields</span></div>
+            <label>Voter ID / EPIC number<input name="id_number" value="NLN2089555" required /></label>
+            <label>Full name<input name="full_name" value="Karan Kapoor" required /></label>
+            <label>Date of birth<input name="dob" type="date" value="1996-02-29" required /></label>
+            <button id="voter-button" class="primary-button" type="submit"><span>Test Voter ID</span><b>↗</b></button>
+            <p id="voter-message" class="form-message" role="status"></p>
+            <details id="voter-result-details" class="quick-result-details" hidden><summary>View result details</summary><div id="voter-result"></div></details>
+          </form>
+
+          <form id="rc-form" class="quick-card">
+            <div class="quick-card-heading"><h3>RC Full</h3><span>1 field</span></div>
+            <label>Vehicle registration number<input name="id_number" value="RJ12XJ1234" required /></label>
+            <button id="rc-button" class="primary-button" type="submit"><span>Test RC Full</span><b>↗</b></button>
+            <p id="rc-message" class="form-message" role="status"></p>
+            <details id="rc-result-details" class="quick-result-details" hidden><summary>View result details</summary><div id="rc-result"></div></details>
+          </form>
+
+          <form id="rc-v2-form" class="quick-card">
+            <div class="quick-card-heading"><h3>RC V2</h3><span>vehicle compliance</span></div>
+            <label>Vehicle registration number<input name="id_number" value="DL08AB1234" required /></label>
+            <label class="checkbox-line"><input name="enrich" type="checkbox" value="true" /> Request enriched owner/chassis data</label>
+            <button id="rc-v2-button" class="primary-button" type="submit"><span>Test RC V2</span><b>↗</b></button>
+            <p id="rc-v2-message" class="form-message" role="status"></p>
+            <div id="rc-v2-result" class="provider-result" hidden></div>
+          </form>
+
+          <form id="passport-form" class="quick-card">
+            <div class="quick-card-heading"><h3>Passport Details</h3><span>2 fields</span></div>
+            <label>Passport file number<input name="file_number" value="DL1061291XXXXXX" required /></label>
+            <label>Date of birth<input name="dob" type="date" value="1990-01-01" required /></label>
+            <button id="passport-button" class="primary-button" type="submit"><span>Test Passport</span><b>↗</b></button>
+            <p id="passport-message" class="form-message" role="status"></p>
+            <details id="passport-result-details" class="quick-result-details" hidden><summary>View result details</summary><div id="passport-result"></div></details>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel worker-addons-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">7 / WORKER VERIFICATION ADD-ONS</p><h2>Face, employment and court checks</h2></div>
+          <span class="method-badge">Included in the worker form</span>
+        </div>
+        <p class="gst-copy">These checks are also available in the main worker form. Use these cards to test each provider directly with one input or upload.</p>
+        <div class="quick-grid">
+          <form id="liveness-form" class="quick-card">
+            <div class="quick-card-heading"><h3>Face Liveness</h3><span>1 file</span></div>
+            <label>Selfie<input id="liveness-file" name="file" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" required /></label>
+            <button id="liveness-button" class="primary-button" type="submit"><span>Test liveness</span><b>↗</b></button>
+            <p id="liveness-message" class="form-message" role="status"></p>
+            <div id="liveness-result" class="provider-result" hidden></div>
+          </form>
+
+          <form id="face-match-form" class="quick-card">
+            <div class="quick-card-heading"><h3>Face Match</h3><span>2 files</span></div>
+            <label>Selfie<input id="face-match-selfie" name="selfie" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" required /></label>
+            <label>ID card<input id="face-match-id-card" name="id_card" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" required /></label>
+            <button id="face-match-button" class="primary-button" type="submit"><span>Test face match</span><b>↗</b></button>
+            <p id="face-match-message" class="form-message" role="status"></p>
+            <div id="face-match-result" class="provider-result" hidden></div>
+          </form>
+
+          <form id="employment-form" class="quick-card">
+            <div class="quick-card-heading"><h3>Employment History</h3><span>UAN</span></div>
+            <label>Universal Account Number<input name="id_number" value="101234567890" inputmode="numeric" pattern="[0-9]{12}" maxlength="12" required /></label>
+            <button id="employment-button" class="primary-button" type="submit"><span>Check employment</span><b>↗</b></button>
+            <p id="employment-message" class="form-message" role="status"></p>
+            <div id="employment-result" class="provider-result" hidden></div>
+          </form>
+
+          <form id="ecourts-form" class="quick-card">
+            <div class="quick-card-heading"><h3>eCourts Search</h3><span>4 required</span></div>
+            <label>Person name<input name="name" value="Gagan Sharma" required /></label>
+            <label>Father name<input name="father_name" value="Ramesh Chand Sharma" required /></label>
+            <label>Address<textarea name="address" rows="2" required>Ramnagariya, Jagatpura, Jaipur</textarea></label>
+            <div class="field-grid compact-grid"><label>Year<input name="year" value="2020" maxlength="4" /></label><label>State<input name="state" placeholder="Optional" /></label></div>
+            <button id="ecourts-button" class="primary-button" type="submit"><span>Search court records</span><b>↗</b></button>
+            <p id="ecourts-message" class="form-message" role="status"></p>
+            <div id="ecourts-result" class="provider-result" hidden></div>
+          </form>
+
+          <form id="cnr-form" class="quick-card">
+            <div class="quick-card-heading"><h3>CNR Search</h3><span>admin/test tool</span></div>
+            <label>CNR number<input name="cnr_number" placeholder="16-character CNR" maxlength="16" required /></label>
+            <label>Court type<select name="court_type"><option value="district_court">District court</option><option value="high_court">High court</option></select></label>
+            <button id="cnr-button" class="primary-button" type="submit"><span>Search by CNR</span><b>↗</b></button>
+            <p id="cnr-message" class="form-message" role="status"></p>
+            <div id="cnr-result" class="provider-result" hidden></div>
+          </form>
+
+          <form id="court-details-form" class="quick-card">
+            <div class="quick-card-heading"><h3>Court Report Details</h3><span>admin/test tool</span></div>
+            <label>eCourt client ID<input name="client_id" placeholder="Returned by an eCourt initialize API" required /></label>
+            <button id="court-details-button" class="primary-button" type="submit"><span>Fetch court report</span><b>↗</b></button>
+            <p id="court-details-message" class="form-message" role="status"></p>
+            <div id="court-details-result" class="provider-result" hidden></div>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel digilocker-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">8 / DIGITAL DOCUMENT COLLECTION</p><h2>DigiLocker</h2></div>
+          <span class="method-badge">POST /api/v1/digilocker/initialize</span>
+        </div>
+        <p class="gst-copy">DigiLocker opens a secure user journey. It is not submitted as a normal background job. The returned URL is opened only after the worker gives consent.</p>
+        <form id="digilocker-form" class="address-form">
+          <label>Worker full name<input name="full_name" value="Example User" /></label>
+          <label>Worker mobile<input name="mobile_number" value="9876543210" inputmode="numeric" maxlength="10" /></label>
+          <label class="checkbox-line"><input name="signup_flow" type="checkbox" value="true" checked /> New DigiLocker signup flow</label>
+          <label class="checkbox-line"><input name="aadhaar_xml" type="checkbox" value="true" /> Request Aadhaar XML data</label>
+          <button id="digilocker-button" class="primary-button" type="submit"><span>Start DigiLocker</span><b>↗</b></button>
+        </form>
+        <p id="digilocker-message" class="form-message" role="status"></p>
+        <div id="digilocker-result" class="provider-result" hidden></div>
+      </section>
+
+      <section class="panel gst-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">3 / SUREPASS SANDBOX</p><h2>GST OCR test</h2></div>
+          <span class="method-badge">POST /api/v1/ocr/gst</span>
+        </div>
+        <p class="gst-copy">Upload a GST certificate image or PDF. The browser sends it to NestJS; NestJS adds the secret token and sends the multipart request to Surepass.</p>
+        <form id="gst-form" class="gst-form">
+          <label>GST certificate<input id="gst-file" name="file" type="file" accept="image/jpeg,image/png,application/pdf" required /></label>
+          <button id="gst-button" class="primary-button" type="submit"><span>Test GST OCR</span><b>↗</b></button>
+        </form>
+        <p id="gst-message" class="form-message" role="status"></p>
+        <pre id="gst-result" class="gst-result" hidden></pre>
+      </section>
+
+      <section class="panel aadhaar-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">4 / SUREPASS SANDBOX</p><h2>e-Aadhaar verification</h2></div>
+          <span class="method-badge">POST /api/v1/aadhaar/upload/eaadhaar</span>
+        </div>
+        <p class="gst-copy">Upload the password-protected e-Aadhaar PDF downloaded from UIDAI. NestJS converts the PDF to the required base64 request field and sends it securely to Surepass.</p>
+        <form id="eaadhaar-form" class="aadhaar-form">
+          <label>e-Aadhaar PDF<input id="eaadhaar-file" name="file" type="file" accept="application/pdf,.pdf" required /></label>
+          <label>Full name<input id="eaadhaar-full-name" name="full_name" required /></label>
+          <label>Year of birth<input id="eaadhaar-yob" name="yob" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required /></label>
+          <button id="eaadhaar-button" class="primary-button" type="submit"><span>Verify e-Aadhaar</span><b>↗</b></button>
+        </form>
+        <p id="eaadhaar-message" class="form-message" role="status"></p>
+        <div id="eaadhaar-result" class="provider-result" hidden></div>
+      </section>
+
+      <section class="panel address-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">5 / SUREPASS SANDBOX</p><h2>Address matching</h2></div>
+          <span class="method-badge">POST /api/v1/utils/address-matching</span>
+        </div>
+        <p class="gst-copy">Compare the worker’s submitted address with the address returned from Aadhaar, Driving Licence, RC, or another verification document.</p>
+        <form id="address-form" class="address-form">
+          <label>Worker-submitted address<textarea name="address_1" rows="5" required>House 12, MG Road, Raipur, Chhattisgarh</textarea></label>
+          <label>Verified/document address<textarea name="address_2" rows="5" required>H.No. 12, Mahatma Gandhi Road, Raipur, CG</textarea></label>
+          <button id="address-button" class="primary-button" type="submit"><span>Compare addresses</span><b>↗</b></button>
+        </form>
+        <p id="address-message" class="form-message" role="status"></p>
+        <div id="address-result" class="provider-result" hidden></div>
+      </section>
+
+      <section class="panel cibil-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">6 / SUREPASS SANDBOX</p><h2>CIBIL credit score</h2></div>
+          <span class="method-badge">POST /api/v1/credit-report-cibil/score</span>
+        </div>
+        <p class="gst-copy">Use this only when the worker has given explicit permission for a credit check. The provider documentation says the request is recorded as a credit inquiry.</p>
+        <form id="cibil-form" class="cibil-form">
+          <label>PAN number<input name="pan" value="ABCPD1234F" pattern="[A-Za-z]{5}[0-9]{4}[A-Za-z]" required /></label>
+          <label>Mobile number<input name="mobile" value="9999000900" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" required /></label>
+          <label>Name as per PAN<input name="name" value="RAJIV TALWAR" required /></label>
+          <label>Gender<select name="gender" required><option value="male">Male</option><option value="female">Female</option></select></label>
+          <label class="consent-field"><span>Credit check consent</span><span class="checkbox-line"><input id="cibil-consent" type="checkbox" required /> I agree to this CIBIL credit check and understand it may be recorded as an inquiry.</span></label>
+          <button id="cibil-button" class="primary-button" type="submit"><span>Check CIBIL score</span><b>↗</b></button>
+        </form>
+        <p id="cibil-message" class="form-message" role="status"></p>
+        <div id="cibil-result" class="provider-result" hidden></div>
+      </section>
+
+      </details>
+
+      <footer><span>Local UI</span><span>API :3000</span><span>Mock provider :4001</span><span>Redis :6379</span></footer>
+    </main>
+    <script src="/app.js?v=20260820-2"></script>
+  </body>
+</html>

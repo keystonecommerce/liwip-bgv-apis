@@ -1,0 +1,465 @@
+import { VerificationTestOptions, VerificationType } from "../types";
+import { UnrecoverableError } from "bullmq";
+
+export interface ProviderResponse {
+  requestId?: string;
+  status?: string;
+  data?: Record<string, unknown> | null;
+}
+
+export interface GstProviderResponse {
+  statusCode: number;
+  body: Record<string, unknown> | null;
+}
+
+export interface VerificationProvider {
+  verify(type: VerificationType, payload: Record<string, unknown>, options?: VerificationTestOptions): Promise<ProviderResponse>;
+}
+
+export class MockVerificationProvider implements VerificationProvider {
+  private readonly baseUrl = process.env.MOCK_PROVIDER_URL || "http://localhost:4001";
+
+  async verify(type: VerificationType, payload: Record<string, unknown>, options?: VerificationTestOptions): Promise<ProviderResponse> {
+    const endpointByType: Record<VerificationType, string> = {
+      AADHAAR: "/v1/verify/aadhaar",
+      PAN: "/v1/verify/pan",
+      DRIVING_LICENSE: "/v1/verify/driving-license",
+      VOTER_ID: "/v1/verify/voter-id",
+      ADDRESS_MATCHING: "/v1/verify/address-matching",
+      EDUCATION: "/v1/verify/education",
+      RC_FULL: "/v1/verify/rc-full",
+      RC_V2: "/v1/verify/rc-v2",
+      CIBIL_SCORE: "/v1/verify/cibil-score",
+      PASSPORT: "/v1/verify/passport-details",
+      FACE_LIVENESS: "/v1/verify/face-liveness",
+      FACE_MATCH: "/v1/verify/face-match",
+      EMPLOYMENT_HISTORY: "/v1/verify/employment-history",
+      ECOURTS_SEARCH: "/v1/verify/ecourts-search"
+    };
+
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (options?.mockScenario) headers["X-Mock-Scenario"] = options.mockScenario;
+    if (options?.mockDelayMs !== undefined) headers["X-Mock-Delay-Ms"] = String(options.mockDelayMs);
+
+    const response = await fetch(`${this.baseUrl}${endpointByType[type]}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const body = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      const error = new Error(`Provider returned HTTP ${response.status}`) as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
+      error.code = response.status === 429 || response.status >= 500 ? "PROVIDER_UNAVAILABLE" : "PROVIDER_HTTP_ERROR";
+      error.providerResponse = body && typeof body === "object" ? body as Record<string, unknown> : null;
+      throw error;
+    }
+
+    if (!body || typeof body.status !== "string") {
+      const error = new Error("Provider returned a malformed response") as Error & { code?: string };
+      error.code = "MALFORMED_PROVIDER_RESPONSE";
+      throw error;
+    }
+
+    return body as ProviderResponse;
+  }
+}
+
+export class SurepassProvider implements VerificationProvider {
+  private readonly baseUrl = process.env.SUREPASS_BASE_URL || "https://sandbox.surepass.app";
+  private readonly bearerToken = process.env.SUREPASS_BEARER_TOKEN;
+  private readonly customerId = process.env.SUREPASS_CUSTOMER_ID;
+
+  async verify(type: VerificationType, payload: Record<string, unknown>): Promise<ProviderResponse> {
+    if (!this.bearerToken) {
+      const error = new Error("SUREPASS_BEARER_TOKEN is not configured") as Error & { code?: string };
+      error.code = "PROVIDER_CONFIGURATION_ERROR";
+      throw error;
+    }
+
+    if (type === "AADHAAR") {
+      return this.toVerificationResponse(await this.verifyEaadhaar(payload as any), "e-Aadhaar");
+    }
+    if (type === "PAN") {
+      return this.toVerificationResponse(await this.verifyPanComprehensive({ idNumber: String(payload.idNumber) }), "PAN");
+    }
+    if (type === "DRIVING_LICENSE") {
+      return this.toVerificationResponse(await this.verifyDrivingLicense({ idNumber: String(payload.licenseNumber), dob: String(payload.dob) }), "Driving Licence");
+    }
+    if (type === "VOTER_ID") {
+      return this.toVerificationResponse(await this.verifyVoterId({
+        idNumber: String(payload.idNumber),
+        fullName: String(payload.fullName),
+        dob: String(payload.dob)
+      }), "Voter ID");
+    }
+    if (type === "ADDRESS_MATCHING") {
+      return this.toVerificationResponse(await this.matchAddresses({ address1: String(payload.address1), address2: String(payload.address2) }), "Address Matching", true);
+    }
+    if (type === "RC_FULL") {
+      return this.toVerificationResponse(await this.verifyRcFull({ idNumber: String(payload.idNumber) }), "RC Full");
+    }
+    if (type === "RC_V2") {
+      return this.toVerificationResponse(await this.verifyRcV2({ idNumber: String(payload.idNumber), enrich: false }), "RC V2");
+    }
+    if (type === "CIBIL_SCORE") {
+      return this.toVerificationResponse(await this.verifyCibilScore({
+        pan: String(payload.pan),
+        mobile: String(payload.mobile),
+        name: String(payload.name),
+        gender: String(payload.gender) as "male" | "female"
+      }), "CIBIL Score");
+    }
+    if (type === "PASSPORT") {
+      return this.toVerificationResponse(await this.verifyPassportDetails({ fileNumber: String(payload.fileNumber), dob: String(payload.dob) }), "Passport");
+    }
+    if (type === "FACE_LIVENESS") {
+      return this.toVerificationResponse(await this.verifyFaceLiveness(payload as any), "Face Liveness", false, (data) => data.live === true ? "verified" : "failed");
+    }
+    if (type === "FACE_MATCH") {
+      return this.toVerificationResponse(await this.verifyFaceMatch(payload as any), "Face Match", false, (data) => data.match_status === true ? "verified" : "failed");
+    }
+    if (type === "EMPLOYMENT_HISTORY") {
+      return this.toVerificationResponse(await this.verifyEmploymentHistory({ uan: String(payload.uan) }), "Employment History");
+    }
+    if (type === "ECOURTS_SEARCH") {
+      return this.toVerificationResponse(
+        await this.searchEcourts({
+          name: String(payload.name),
+          fatherName: String(payload.fatherName),
+          address: String(payload.address),
+          year: payload.year ? String(payload.year) : undefined,
+          state: payload.state ? String(payload.state) : undefined
+        }),
+        "Court Records",
+        false,
+        (data) => Array.isArray(data.result) && data.result.length > 0 ? "manual_review" : "verified"
+      );
+    }
+
+    const error = new Error(`Surepass adapter does not support ${type} yet`) as Error & { code?: string };
+    error.code = "UNSUPPORTED_VERIFICATION_TYPE";
+    throw error;
+  }
+
+  private toVerificationResponse(raw: GstProviderResponse, label: string, addressMatch = false, resolveStatus?: (data: Record<string, unknown>) => string): ProviderResponse {
+    const body = raw.body as {
+      success?: boolean;
+      data?: Record<string, unknown> | null;
+      message?: string;
+      message_code?: string;
+      status_code?: number;
+    } | null;
+    if (raw.statusCode >= 400 || body?.success === false) {
+      const details = JSON.stringify({
+        status_code: body?.status_code || raw.statusCode,
+        message: body?.message || "verification failed",
+        message_code: body?.message_code,
+        success: body?.success
+      });
+      const message = `Surepass ${label} returned HTTP ${raw.statusCode}: ${details}`;
+      const error = (raw.statusCode >= 400 && raw.statusCode < 500 && raw.statusCode !== 429
+        ? new UnrecoverableError(message)
+        : new Error(message)) as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
+      error.code = raw.statusCode === 429 || raw.statusCode >= 500 ? "PROVIDER_UNAVAILABLE" : "PROVIDER_HTTP_ERROR";
+      error.providerResponse = body;
+      throw error;
+    }
+    if (!body?.data || typeof body.data !== "object") {
+      const error = new Error(`Surepass ${label} returned a malformed response`) as Error & { code?: string };
+      error.code = "MALFORMED_PROVIDER_RESPONSE";
+      throw error;
+    }
+    return {
+      requestId: typeof body.data.client_id === "string" ? body.data.client_id : undefined,
+      status: resolveStatus ? resolveStatus(body.data) : addressMatch && body.data.match_status === false ? "failed" : "verified",
+      data: body.data
+    };
+  }
+
+  async verifyDrivingLicense(payload: { idNumber: string; dob: string }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      authorization: `Bearer ${this.bearerToken}`
+    };
+    if (this.customerId) headers["X-Customer-Id"] = this.customerId;
+
+    const response = await fetch(`${this.baseUrl}/api/v1/driving-license/driving-license`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ id_number: payload.idNumber, dob: payload.dob })
+    });
+    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+    return { statusCode: response.status, body };
+  }
+
+  async verifyGst(file: { buffer: Buffer; originalname: string; mimetype: string }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+
+    const form = new FormData();
+    const bytes = new Uint8Array(file.buffer.length);
+    bytes.set(file.buffer);
+    const blob = new Blob([bytes], { type: file.mimetype || "application/octet-stream" });
+    form.append("file", blob, file.originalname || "gst-certificate");
+
+    const response = await fetch(`${this.baseUrl}/api/v1/ocr/gst`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.bearerToken}` },
+      body: form
+    });
+    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+    return { statusCode: response.status, body };
+  }
+
+  async verifyEaadhaar(payload: {
+    buffer: Buffer;
+    originalname: string;
+    mimetype: string;
+    fullName: string;
+    yearOfBirth: string;
+  }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+
+    const form = new FormData();
+    const bytes = new Uint8Array(payload.buffer.length);
+    bytes.set(payload.buffer);
+    const blob = new Blob([bytes], { type: payload.mimetype || "application/pdf" });
+    const fileField = process.env.SUREPASS_EAADHAAR_FILE_FIELD || "file";
+    form.append(fileField, blob, payload.originalname || "eaadhaar.pdf");
+    form.append("base64", payload.buffer.toString("base64"));
+    form.append("yob", payload.yearOfBirth);
+    form.append("full_name", payload.fullName);
+
+    const response = await fetch(`${this.baseUrl}/api/v1/aadhaar/upload/eaadhaar`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.bearerToken}` },
+      body: form
+    });
+    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+    return { statusCode: response.status, body };
+  }
+
+  async verifyPanComprehensive(payload: { idNumber: string; maskedAadhaarVariant?: string }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+
+    const response = await fetch(`${this.baseUrl}/api/v1/pan/pan-comprehensive`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.bearerToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ id_number: payload.idNumber, masked_aadhaar_variant: payload.maskedAadhaarVariant || "empty" })
+    });
+    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+    return { statusCode: response.status, body };
+  }
+
+  async verifyVoterId(payload: { idNumber: string; fullName: string; dob: string }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${this.bearerToken}`,
+      "content-type": "application/json"
+    };
+    if (this.customerId) headers["X-Customer-Id"] = this.customerId;
+
+    const response = await fetch(`${this.baseUrl}/api/v1/voter-id/voter-id`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        id_number: payload.idNumber,
+        additional_details: {
+          full_name: payload.fullName,
+          dob: payload.dob
+        }
+      })
+    });
+    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+    return { statusCode: response.status, body };
+  }
+
+  async verifyRcFull(payload: { idNumber: string }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+
+    const response = await fetch(`${this.baseUrl}/api/v1/rc/rc-full`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.bearerToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ id_number: payload.idNumber })
+    });
+    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+    return { statusCode: response.status, body };
+  }
+
+  async verifyRcV2(payload: { idNumber: string; enrich?: boolean }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+
+    const response = await fetch(`${this.baseUrl}/api/v1/rc/rc-v2`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.bearerToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ id_number: payload.idNumber, enrich: payload.enrich === true })
+    });
+    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+    return { statusCode: response.status, body };
+  }
+
+  async matchAddresses(payload: { address1: string; address2: string }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+
+    const response = await fetch(`${this.baseUrl}/api/v1/utils/address-matching`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.bearerToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ address_1: payload.address1, address_2: payload.address2 })
+    });
+    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+    return { statusCode: response.status, body };
+  }
+
+  async verifyCibilScore(payload: {
+    pan: string;
+    mobile: string;
+    name: string;
+    gender: "male" | "female";
+  }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+
+    const response = await fetch(`${this.baseUrl}/api/v1/credit-report-cibil/score`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.bearerToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        pan: payload.pan,
+        mobile: payload.mobile,
+        name: payload.name,
+        consent: "Y",
+        gender: payload.gender
+      })
+    });
+    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+    return { statusCode: response.status, body };
+  }
+
+  async verifyPassportDetails(payload: { fileNumber: string; dob: string }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+
+    const response = await fetch(`${this.baseUrl}/api/v1/passport/passport/passport-details`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.bearerToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ id_number: payload.fileNumber, dob: payload.dob })
+    });
+    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+    return { statusCode: response.status, body };
+  }
+
+  async verifyFaceLiveness(payload: { buffer: Buffer; originalname: string; mimetype: string }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+    const form = new FormData();
+    const bytes = new Uint8Array(payload.buffer.length);
+    bytes.set(payload.buffer);
+    form.append("file", new Blob([bytes], { type: payload.mimetype || "image/jpeg" }), payload.originalname || "selfie.jpg");
+    const response = await fetch(`${this.baseUrl}/api/v1/face/face-liveness`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.bearerToken}` },
+      body: form
+    });
+    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+  }
+
+  async verifyFaceMatch(payload: {
+    selfie: { buffer: Buffer; originalname: string; mimetype: string };
+    idCard: { buffer: Buffer; originalname: string; mimetype: string };
+    selfie2?: { buffer: Buffer; originalname: string; mimetype: string };
+  }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+    const form = new FormData();
+    const appendFile = (name: string, file: { buffer: Buffer; originalname: string; mimetype: string }) => {
+      const bytes = new Uint8Array(file.buffer.length);
+      bytes.set(file.buffer);
+      form.append(name, new Blob([bytes], { type: file.mimetype || "image/jpeg" }), file.originalname || `${name}.jpg`);
+    };
+    appendFile("selfie", payload.selfie);
+    appendFile("id_card", payload.idCard);
+    if (payload.selfie2) appendFile("selfie_2", payload.selfie2);
+    const response = await fetch(`${this.baseUrl}/api/v1/face/face-match`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.bearerToken}` },
+      body: form
+    });
+    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+  }
+
+  async verifyEmploymentHistory(payload: { uan: string }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+    const response = await fetch(`${this.baseUrl}/api/v1/income/employment-history-uan-v2`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ id_number: payload.uan })
+    });
+    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+  }
+
+  async searchEcourts(payload: { name: string; fatherName: string; address: string; year?: string; state?: string }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+    const response = await fetch(`${this.baseUrl}/api/v1/ecourts/ecourt-search-v2`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: payload.name, father_name: payload.fatherName, address: payload.address, year: payload.year || "", state: payload.state || "" })
+    });
+    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+  }
+
+  async getEcourtIndividualDetails(payload: { clientId: string }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+    const response = await fetch(`${this.baseUrl}/api/v1/ecourts/ecourt-individual-court-details`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ client_id: payload.clientId })
+    });
+    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+  }
+
+  async searchEcourtByCnr(payload: { cnrNumber: string; courtType: "district_court" | "high_court" }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+    const response = await fetch(`${this.baseUrl}/api/v1/ecourts/ecourt-cnr-search-adv`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ cnr_number: payload.cnrNumber, court_type: payload.courtType })
+    });
+    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+  }
+
+  async initializeDigiLocker(payload: Record<string, unknown>): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+    const response = await fetch(`${this.baseUrl}/api/v1/digilocker/initialize`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ data: payload })
+    });
+    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+  }
+}
+
+export class ProviderFactory {
+  private readonly mock = new MockVerificationProvider();
+  private readonly surepass = new SurepassProvider();
+
+  resolve(_type: VerificationType, providerOverride?: "mock" | "surepass"): VerificationProvider {
+    const provider = providerOverride || process.env.VERIFICATION_PROVIDER || "mock";
+    return provider === "surepass" ? this.surepass : this.mock;
+  }
+}
