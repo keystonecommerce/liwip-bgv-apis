@@ -1,0 +1,120 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Application {
+  id            String         @id
+  tenantId      String
+  clientId      String
+  packageId     String?
+  status        String
+  data          Json
+  legacyTestOptions Json?      @map("testOptions")
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  package       VerificationPackage? @relation(fields: [packageId], references: [id])
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  client        Client         @relation(fields: [clientId], references: [id])
+  verifications Verification[]
+
+  @@index([tenantId, createdAt])
+  @@index([clientId, createdAt])
+  @@index([packageId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Tenant {
+  id           String        @id
+  slug         String        @unique
+  name         String
+  status       String        @default("ACTIVE")
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  clients      Client[]
+  applications Application[]
+
+  @@index([status])
+}
+
+model Client {
+  id           String        @id
+  tenantId     String
+  code         String
+  name         String
+  status       String        @default("ACTIVE")
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  tenant       Tenant        @relation(fields: [tenantId], references: [id])
+  apiKeys      ApiKey[]
+  applications Application[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+}
+
+model ApiKey {
+  id         String   @id
+  clientId   String
+  name       String
+  keyPrefix  String
+  keyHash    String   @unique
+  scopes     Json
+  isActive   Boolean  @default(true)
+  expiresAt  DateTime?
+  lastUsedAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId, isActive])
+}
+
+model VerificationPackage {
+  id           String        @id
+  code         String
+  version      Int
+  name         String
+  description  String?
+  kind         String        @default("BASE")
+  priceInr     Int?
+  advertisedCheckCount Int?
+  targetWorkforce String?
+  displayOrder Int           @default(0)
+  isActive     Boolean       @default(true)
+  checks       Json
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  applications Application[]
+
+  @@unique([code, version])
+  @@index([code, isActive])
+}
+
+model Verification {
+  id                String      @id
+  applicationId     String
+  type              String
+  status            String
+  provider          String
+  attemptCount      Int         @default(0)
+  providerRequestId String?
+  result            Json?
+  failureResponse   Json?
+  failureCode       String?
+  failureReason     String?
+  createdAt         DateTime    @default(now())
+  startedAt         DateTime?
+  completedAt       DateTime?
+  updatedAt         DateTime    @updatedAt
+  application       Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@index([status])
+  @@index([type])
+}

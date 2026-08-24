@@ -1,11 +1,31 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: gig-verification-postgres
+    environment:
+      POSTGRES_USER: gig_verification
+      POSTGRES_PASSWORD: local-development-password
+      POSTGRES_DB: gig_verification
+    ports:
+      - "5440:5432"
+    volumes:
+      - gig-verification-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gig_verification -d gig_verification"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   redis:
     image: redis:7-alpine
     container_name: gig-verification-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
+
+volumes:
+  gig-verification-postgres-data:

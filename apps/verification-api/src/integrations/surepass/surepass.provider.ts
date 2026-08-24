@@ -1,4 +1,5 @@
-import { VerificationTestOptions, VerificationType } from "../types";
+import { Injectable } from "@nestjs/common";
+import { VerificationType } from "../../domain/verification.types";
 import { UnrecoverableError } from "bullmq";
 
 export interface ProviderResponse {
@@ -13,58 +14,10 @@ export interface GstProviderResponse {
 }
 
 export interface VerificationProvider {
-  verify(type: VerificationType, payload: Record<string, unknown>, options?: VerificationTestOptions): Promise<ProviderResponse>;
+  verify(type: VerificationType, payload: Record<string, unknown>): Promise<ProviderResponse>;
 }
 
-export class MockVerificationProvider implements VerificationProvider {
-  private readonly baseUrl = process.env.MOCK_PROVIDER_URL || "http://localhost:4001";
-
-  async verify(type: VerificationType, payload: Record<string, unknown>, options?: VerificationTestOptions): Promise<ProviderResponse> {
-    const endpointByType: Record<VerificationType, string> = {
-      AADHAAR: "/v1/verify/aadhaar",
-      PAN: "/v1/verify/pan",
-      DRIVING_LICENSE: "/v1/verify/driving-license",
-      VOTER_ID: "/v1/verify/voter-id",
-      ADDRESS_MATCHING: "/v1/verify/address-matching",
-      EDUCATION: "/v1/verify/education",
-      RC_FULL: "/v1/verify/rc-full",
-      RC_V2: "/v1/verify/rc-v2",
-      CIBIL_SCORE: "/v1/verify/cibil-score",
-      PASSPORT: "/v1/verify/passport-details",
-      FACE_LIVENESS: "/v1/verify/face-liveness",
-      FACE_MATCH: "/v1/verify/face-match",
-      EMPLOYMENT_HISTORY: "/v1/verify/employment-history",
-      ECOURTS_SEARCH: "/v1/verify/ecourts-search"
-    };
-
-    const headers: Record<string, string> = { "content-type": "application/json" };
-    if (options?.mockScenario) headers["X-Mock-Scenario"] = options.mockScenario;
-    if (options?.mockDelayMs !== undefined) headers["X-Mock-Delay-Ms"] = String(options.mockDelayMs);
-
-    const response = await fetch(`${this.baseUrl}${endpointByType[type]}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload)
-    });
-    const body = await response.json().catch(() => null);
-
-    if (!response.ok) {
-      const error = new Error(`Provider returned HTTP ${response.status}`) as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
-      error.code = response.status === 429 || response.status >= 500 ? "PROVIDER_UNAVAILABLE" : "PROVIDER_HTTP_ERROR";
-      error.providerResponse = body && typeof body === "object" ? body as Record<string, unknown> : null;
-      throw error;
-    }
-
-    if (!body || typeof body.status !== "string") {
-      const error = new Error("Provider returned a malformed response") as Error & { code?: string };
-      error.code = "MALFORMED_PROVIDER_RESPONSE";
-      throw error;
-    }
-
-    return body as ProviderResponse;
-  }
-}
-
+@Injectable()
 export class SurepassProvider implements VerificationProvider {
   private readonly baseUrl = process.env.SUREPASS_BASE_URL || "https://sandbox.surepass.app";
   private readonly bearerToken = process.env.SUREPASS_BEARER_TOKEN;
@@ -121,6 +74,15 @@ export class SurepassProvider implements VerificationProvider {
     }
     if (type === "EMPLOYMENT_HISTORY") {
       return this.toVerificationResponse(await this.verifyEmploymentHistory({ uan: String(payload.uan) }), "Employment History");
+    }
+    if (type === "CURRENT_EMPLOYMENT") {
+      return this.toVerificationResponse(await this.verifyCurrentEmployment({
+        panNumber: payload.panNumber ? String(payload.panNumber) : undefined,
+        mobileNumber: payload.mobileNumber ? String(payload.mobileNumber) : undefined,
+        uanNumber: payload.uanNumber ? String(payload.uanNumber) : undefined,
+        employerName: payload.employerName ? String(payload.employerName) : undefined,
+        employeeName: payload.employeeName ? String(payload.employeeName) : undefined
+      }), "Current Employment");
     }
     if (type === "ECOURTS_SEARCH") {
       return this.toVerificationResponse(
@@ -413,6 +375,29 @@ export class SurepassProvider implements VerificationProvider {
     return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
   }
 
+  async verifyCurrentEmployment(payload: {
+    panNumber?: string;
+    mobileNumber?: string;
+    uanNumber?: string;
+    employerName?: string;
+    employeeName?: string;
+  }): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+    const body = {
+      ...(payload.panNumber ? { pan_number: payload.panNumber } : {}),
+      ...(payload.mobileNumber ? { mobile_number: payload.mobileNumber } : {}),
+      ...(payload.uanNumber ? { uan_number: payload.uanNumber } : {}),
+      ...(payload.employerName ? { employer_name: payload.employerName } : {}),
+      ...(payload.employeeName ? { employee_name: payload.employeeName } : {})
+    };
+    const response = await fetch(`${this.baseUrl}/api/v1/employment/current-employment-pan-mobile`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+  }
+
   async searchEcourts(payload: { name: string; fatherName: string; address: string; year?: string; state?: string }): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
     const response = await fetch(`${this.baseUrl}/api/v1/ecourts/ecourt-search-v2`, {
@@ -451,15 +436,5 @@ export class SurepassProvider implements VerificationProvider {
       body: JSON.stringify({ data: payload })
     });
     return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
-  }
-}
-
-export class ProviderFactory {
-  private readonly mock = new MockVerificationProvider();
-  private readonly surepass = new SurepassProvider();
-
-  resolve(_type: VerificationType, providerOverride?: "mock" | "surepass"): VerificationProvider {
-    const provider = providerOverride || process.env.VERIFICATION_PROVIDER || "mock";
-    return provider === "surepass" ? this.surepass : this.mock;
   }
 }

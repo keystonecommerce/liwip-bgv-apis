@@ -1,35 +1,29 @@
-import { BadRequestException, Body, Controller, Get, Headers, Inject, Param, Post, Res, UploadedFile, UploadedFiles, UseInterceptors } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Inject, Param, Post, Res, UploadedFile, UploadedFiles, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileFieldsInterceptor, FileInterceptor } from "@nestjs/platform-express";
 import type { Response } from "express";
-import { ApplicationSchema } from "../types";
-import { ProviderFactory, SurepassProvider } from "./provider";
-import { VerificationService } from "./service";
+import { ApplicationSchema } from "../../domain/verification.types";
+import { InternalRouteGuard } from "../../common/auth/internal-route.guard";
+import { SurepassProvider } from "../../integrations/surepass/surepass.provider";
+import { VerificationService } from "./verification.service";
 
 @Controller()
+@UseGuards(InternalRouteGuard)
 export class VerificationController {
   constructor(
     @Inject(VerificationService) private readonly verificationService: VerificationService,
-    @Inject(ProviderFactory) private readonly providerFactory: ProviderFactory
+    @Inject(SurepassProvider) private readonly provider: SurepassProvider
   ) {}
 
   @Post("applications")
-  createApplication(
-    @Body() data: ApplicationSchema,
-    @Headers("x-mock-scenario") mockScenario?: string,
-    @Headers("x-mock-delay-ms") mockDelayMs?: string,
-    @Headers("x-verification-provider") provider?: string
-  ) {
-    if (process.env.NODE_ENV === "production") return this.verificationService.createApplication(data);
-    const parsedDelay = mockDelayMs ? Number(mockDelayMs) : undefined;
-    return this.verificationService.createApplication(data, {
-      mockScenario: mockScenario as any,
-      mockDelayMs: Number.isFinite(parsedDelay) ? parsedDelay : undefined,
-      provider: provider === "surepass" ? "surepass" : provider === "mock" ? "mock" : undefined
-    });
+  createApplication(@Body() data: ApplicationSchema) {
+    return this.verificationService.createApplication(data);
   }
 
   @Get("applications/:id/verifications")
   getApplication(@Param("id") id: string) { return this.verificationService.getApplicationDetails(id); }
+
+  @Get("worker/packages")
+  listPackages() { return this.verificationService.listPackages(); }
 
   @Post("verifications/:id/retry")
   retryVerification(@Param("id") id: string) { return this.verificationService.retryVerification(id); }
@@ -43,6 +37,7 @@ export class VerificationController {
   async createWorkerVerification(
     @UploadedFiles() files: Record<string, Array<{ buffer: Buffer; originalname: string; mimetype: string }>> | undefined,
     @Body() payload: {
+      package_code?: string;
       name?: string;
       dob?: string;
       mobile?: string;
@@ -52,6 +47,12 @@ export class VerificationController {
       voter_id?: string;
       father_name?: string;
       uan?: string;
+      employer_name?: string;
+      reference_name?: string;
+      reference_phone?: string;
+      reference_relationship?: string;
+      skill_certification?: string;
+      certificate_reference?: string;
       criminal_consent?: string;
       criminal_year?: string;
       criminal_state?: string;
@@ -68,9 +69,9 @@ export class VerificationController {
     const file = files?.aadhaar_file?.[0];
     const selfie = files?.selfie?.[0];
     const idCard = files?.id_card?.[0];
-    const required = [payload?.name, payload?.dob, payload?.mobile, payload?.pan, payload?.driving_license, payload?.submitted_address];
+    const required = [payload?.name, payload?.dob, payload?.mobile];
     if (required.some((value) => !String(value || "").trim())) {
-      throw new BadRequestException("name, dob, mobile, pan, driving_license, and submitted_address are required");
+      throw new BadRequestException("name, dob, and mobile are required");
     }
     if (file?.buffer && !file.originalname?.toLowerCase().endsWith(".pdf") && file.mimetype !== "application/pdf") {
       throw new BadRequestException("The Aadhaar document must be a PDF");
@@ -85,26 +86,40 @@ export class VerificationController {
     if (payload.criminal_consent === "Y" && (!payload.father_name?.trim() || !payload.submitted_address?.trim())) {
       throw new BadRequestException("father_name and submitted_address are required for the court-record check");
     }
-    if (payload.consent !== "Y" || payload.address_consent !== "Y") throw new BadRequestException("Identity and address consent are required");
-    if (!/^[A-Za-z]{5}[0-9]{4}[A-Za-z]$/.test(payload.pan!)) throw new BadRequestException("pan must match the format ABCDE1234F");
+    if (payload.consent !== "Y") throw new BadRequestException("Identity verification consent is required");
+    if ((payload.submitted_address || file) && payload.address_consent !== "Y") throw new BadRequestException("Address consent is required when an address or Aadhaar document is submitted");
+    if (payload.pan && !/^[A-Za-z]{5}[0-9]{4}[A-Za-z]$/.test(payload.pan)) throw new BadRequestException("pan must match the format ABCDE1234F");
     if (!/^\d{10}$/.test(payload.mobile!)) throw new BadRequestException("mobile must be a 10-digit number");
     if (payload.gender && !["male", "female"].includes(payload.gender)) throw new BadRequestException("gender must be male or female");
     if (payload.credit_consent === "Y" && !payload.gender) throw new BadRequestException("gender is required for a CIBIL check");
 
     return this.verificationService.createApplication({
+      packageCode: payload.package_code?.trim().toUpperCase() || "BASIC_ID",
       personal: {
         phone: payload.mobile!,
         nameAsAadhaar: payload.name!.trim(),
         dateOfBirth: payload.dob!,
-        panNumber: payload.pan!.trim().toUpperCase(),
-        drivingLicenceNumber: payload.driving_license!.trim(),
-        drivingLicenceDob: payload.driving_license_dob || payload.dob,
+        panNumber: payload.pan?.trim().toUpperCase() || undefined,
+        drivingLicenceNumber: payload.driving_license?.trim() || undefined,
+        drivingLicenceDob: payload.driving_license ? payload.driving_license_dob || payload.dob : undefined,
         voterId: payload.voter_id?.trim() || undefined,
         gender: payload.gender || undefined,
         passportFileNumber: payload.passport_file_number?.trim() || undefined,
-        submittedAddress: payload.submitted_address!.trim()
+        submittedAddress: payload.submitted_address?.trim() || undefined
       },
-      employment: payload.uan ? { uan: payload.uan.trim() } : undefined,
+      employment: payload.uan || payload.employer_name?.trim() ? {
+        uan: payload.uan?.trim() || undefined,
+        employerName: payload.employer_name?.trim() || undefined
+      } : undefined,
+      references: payload.reference_name?.trim() ? [{
+        name: payload.reference_name.trim(),
+        phone: payload.reference_phone?.trim() || undefined,
+        relationship: payload.reference_relationship?.trim() || undefined
+      }] : undefined,
+      skills: payload.skill_certification?.trim() || payload.certificate_reference?.trim() ? {
+        certificationName: payload.skill_certification?.trim() || undefined,
+        certificateReference: payload.certificate_reference?.trim() || undefined
+      } : undefined,
       criminal: payload.criminal_consent === "Y" ? {
         fatherName: payload.father_name?.trim(),
         year: payload.criminal_year?.trim() || undefined,
@@ -133,7 +148,7 @@ export class VerificationController {
           grantedAt: new Date().toISOString()
         }
       } : {})
-    }, { provider: "surepass" }, file?.buffer || selfie?.buffer || idCard?.buffer ? {
+    }, file?.buffer || selfie?.buffer || idCard?.buffer ? {
       ...(file?.buffer ? { aadhaarPdf: {
         buffer: file.buffer,
         originalname: file.originalname,
@@ -153,8 +168,7 @@ export class VerificationController {
     @Res({ passthrough: true }) response: Response
   ) {
     if (!file?.buffer) throw new BadRequestException("Upload a GST certificate using the file field");
-    const provider = this.providerFactory.resolve("DRIVING_LICENSE", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass GST adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.verifyGst(file);
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
@@ -174,8 +188,7 @@ export class VerificationController {
     if (!payload?.yob || !/^\d{4}$/.test(payload.yob)) throw new BadRequestException("yob must be a four-digit year");
     if (!payload?.full_name?.trim()) throw new BadRequestException("full_name is required");
 
-    const provider = this.providerFactory.resolve("DRIVING_LICENSE", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass e-Aadhaar adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.verifyEaadhaar({
       buffer: file.buffer,
       originalname: file.originalname,
@@ -192,8 +205,7 @@ export class VerificationController {
     if (!payload?.id_number || !payload?.dob) {
       throw new BadRequestException("id_number and dob are required");
     }
-    const provider = this.providerFactory.resolve("DRIVING_LICENSE", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass Driving Licence adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.verifyDrivingLicense({ idNumber: payload.id_number, dob: payload.dob });
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
@@ -204,8 +216,7 @@ export class VerificationController {
     if (!payload?.id_number) {
       throw new BadRequestException("id_number is required");
     }
-    const provider = this.providerFactory.resolve("DRIVING_LICENSE", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass PAN adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.verifyPanComprehensive({ idNumber: payload.id_number, maskedAadhaarVariant: payload.masked_aadhaar_variant });
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
@@ -219,8 +230,7 @@ export class VerificationController {
     if (!payload?.id_number || !payload?.full_name || !payload?.dob) {
       throw new BadRequestException("id_number, full_name, and dob are required");
     }
-    const provider = this.providerFactory.resolve("DRIVING_LICENSE", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass Voter ID adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.verifyVoterId({
       idNumber: payload.id_number,
       fullName: payload.full_name,
@@ -233,8 +243,7 @@ export class VerificationController {
   @Post("provider-tests/surepass/rc-full")
   async testSurepassRcFull(@Body() payload: { id_number?: string }, @Res({ passthrough: true }) response: Response) {
     if (!payload?.id_number) throw new BadRequestException("id_number is required");
-    const provider = this.providerFactory.resolve("DRIVING_LICENSE", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass RC Full adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.verifyRcFull({ idNumber: payload.id_number });
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
@@ -246,8 +255,7 @@ export class VerificationController {
     @Res({ passthrough: true }) response: Response
   ) {
     if (!payload?.id_number?.trim()) throw new BadRequestException("id_number is required");
-    const provider = this.providerFactory.resolve("RC_V2", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass RC V2 adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.verifyRcV2({ idNumber: payload.id_number.trim().toUpperCase(), enrich: payload.enrich === true });
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
@@ -261,8 +269,7 @@ export class VerificationController {
     if (!payload?.address_1?.trim() || !payload?.address_2?.trim()) {
       throw new BadRequestException("address_1 and address_2 are required");
     }
-    const provider = this.providerFactory.resolve("DRIVING_LICENSE", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass Address Matching adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.matchAddresses({ address1: payload.address_1, address2: payload.address_2 });
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
@@ -282,8 +289,7 @@ export class VerificationController {
     if (!/^\d{10}$/.test(payload.mobile)) {
       throw new BadRequestException("mobile must be a 10-digit number");
     }
-    const provider = this.providerFactory.resolve("DRIVING_LICENSE", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass CIBIL adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.verifyCibilScore({
       pan: payload.pan,
       mobile: payload.mobile,
@@ -302,8 +308,7 @@ export class VerificationController {
     if (!payload?.file_number || !payload?.dob) {
       throw new BadRequestException("file_number and dob are required");
     }
-    const provider = this.providerFactory.resolve("DRIVING_LICENSE", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass Passport adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.verifyPassportDetails({ fileNumber: payload.file_number, dob: payload.dob });
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
@@ -316,8 +321,7 @@ export class VerificationController {
     @Res({ passthrough: true }) response: Response
   ) {
     if (!file?.buffer) throw new BadRequestException("Upload a selfie using the file field");
-    const provider = this.providerFactory.resolve("FACE_LIVENESS", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass Face Liveness adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.verifyFaceLiveness(file);
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
@@ -336,8 +340,7 @@ export class VerificationController {
     const selfie = files?.selfie?.[0];
     const idCard = files?.id_card?.[0];
     if (!selfie?.buffer || !idCard?.buffer) throw new BadRequestException("Upload both selfie and id_card files");
-    const provider = this.providerFactory.resolve("FACE_MATCH", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass Face Match adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.verifyFaceMatch({ selfie, idCard, selfie2: files?.selfie_2?.[0] });
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
@@ -346,9 +349,45 @@ export class VerificationController {
   @Post("provider-tests/surepass/employment-history")
   async testSurepassEmploymentHistory(@Body() payload: { id_number?: string }, @Res({ passthrough: true }) response: Response) {
     if (!payload?.id_number || !/^\d{12}$/.test(payload.id_number)) throw new BadRequestException("id_number must be a 12-digit UAN");
-    const provider = this.providerFactory.resolve("EMPLOYMENT_HISTORY", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass Employment History adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.verifyEmploymentHistory({ uan: payload.id_number });
+    response.status(result.statusCode);
+    return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
+  }
+
+  @Post("provider-tests/surepass/current-employment")
+  async testSurepassCurrentEmployment(
+    @Body() payload: {
+      pan_number?: string;
+      mobile_number?: string;
+      uan_number?: string;
+      employer_name?: string;
+      employee_name?: string;
+    },
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const panNumber = payload?.pan_number?.trim().toUpperCase();
+    const mobileNumber = payload?.mobile_number?.trim();
+    const uanNumber = payload?.uan_number?.trim();
+    if (!panNumber && !mobileNumber && !uanNumber) {
+      throw new BadRequestException("At least one of pan_number, mobile_number, or uan_number is required");
+    }
+    if (panNumber && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(panNumber)) {
+      throw new BadRequestException("pan_number must match the format ABCDE1234F");
+    }
+    if (mobileNumber && !/^\d{10}$/.test(mobileNumber)) {
+      throw new BadRequestException("mobile_number must be a 10-digit number");
+    }
+    if (uanNumber && !/^\d{12}$/.test(uanNumber)) {
+      throw new BadRequestException("uan_number must be a 12-digit number");
+    }
+    const result = await this.provider.verifyCurrentEmployment({
+      panNumber,
+      mobileNumber,
+      uanNumber,
+      employerName: payload.employer_name?.trim() || undefined,
+      employeeName: payload.employee_name?.trim() || undefined
+    });
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
   }
@@ -361,8 +400,7 @@ export class VerificationController {
     if (!payload?.name?.trim() || !payload?.father_name?.trim() || !payload?.address?.trim()) {
       throw new BadRequestException("name, father_name, and address are required");
     }
-    const provider = this.providerFactory.resolve("ECOURTS_SEARCH", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass eCourts adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.searchEcourts({ name: payload.name, fatherName: payload.father_name, address: payload.address, year: payload.year, state: payload.state });
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
@@ -371,8 +409,7 @@ export class VerificationController {
   @Post("provider-tests/surepass/ecourts/individual-details")
   async testSurepassEcourtIndividualDetails(@Body() payload: { client_id?: string }, @Res({ passthrough: true }) response: Response) {
     if (!payload?.client_id?.trim()) throw new BadRequestException("client_id is required");
-    const provider = this.providerFactory.resolve("ECOURTS_SEARCH", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass eCourt details adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.getEcourtIndividualDetails({ clientId: payload.client_id });
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
@@ -385,8 +422,7 @@ export class VerificationController {
   ) {
     if (!payload?.cnr_number || !/^[A-Za-z0-9]{16}$/.test(payload.cnr_number)) throw new BadRequestException("cnr_number must be a 16-character alphanumeric CNR");
     if (!payload.court_type || !["district_court", "high_court"].includes(payload.court_type)) throw new BadRequestException("court_type must be district_court or high_court");
-    const provider = this.providerFactory.resolve("ECOURTS_SEARCH", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass CNR adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.searchEcourtByCnr({ cnrNumber: payload.cnr_number, courtType: payload.court_type });
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
@@ -396,8 +432,7 @@ export class VerificationController {
   async testSurepassDigiLocker(@Body() payload: { data?: Record<string, unknown> }, @Res({ passthrough: true }) response: Response) {
     const data = payload?.data || {};
     if (data.signup_flow !== true && data.signup_flow !== false) throw new BadRequestException("data.signup_flow must be true or false");
-    const provider = this.providerFactory.resolve("AADHAAR", "surepass");
-    if (!(provider instanceof SurepassProvider)) throw new BadRequestException("Surepass DigiLocker adapter is unavailable");
+    const provider = this.provider;
     const result = await provider.initializeDigiLocker(data);
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };

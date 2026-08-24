@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "sourceMap": true
   },
-  "include": ["apps/**/*.ts", "smoke-tests/**/*.ts"]
+  "include": ["apps/**/*.ts", "scripts/**/*.ts", "smoke-tests/**/*.ts"]
 }

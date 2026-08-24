@@ -1,6 +1,6 @@
 # Gig Worker Verification — API and System Mapping
 
-**Status:** 21 August 2026
+**Status:** 24 August 2026
 **Reference:** LIWIP BGV / Gig Card PRD and the “Gig Worker & Vehicle Background Verification — End to End Ecosystem” flow diagram.
 
 This document only tracks APIs and workflows relevant to the Gig Worker Verification product. It does not list unrelated Surepass catalogue products.
@@ -20,7 +20,7 @@ BullMQ + Redis process checks asynchronously
         ↓
 NestJS Provider Adapter calls Surepass
         ↓
-Results are stored against each checkpoint
+Results are stored in PostgreSQL against each checkpoint
         ↓
 UI shows Queued / Processing / Verified / Failed / Manual Review
         ↓
@@ -29,7 +29,7 @@ Final recommendation: Pass / Fail / Manual Review
 Gig Card, sharing, renewal and client notifications
 ```
 
-The current repository implements the provider-test and core orchestration layers. The complete production case-management, client, card, notification and renewal layers are still pending.
+The current repository implements the provider-test and core orchestration layers with PostgreSQL persistence. The complete production client, card, notification and renewal layers are still pending.
 
 ## 2. Systems and clients from the PRD
 
@@ -80,6 +80,7 @@ Status definitions:
 | Face Match | `POST /api/v1/face/face-match` | Worker App for selfie and ID-card comparison | Implemented — optional worker |
 | Face Liveness | `POST /api/v1/face/face-liveness` | Worker App for selfie liveness | Implemented — optional worker |
 | Employment History by UAN V2 | `POST /api/v1/income/employment-history-uan-v2` | Worker App when UAN is supplied | Implemented — optional worker |
+| Current Employment PAN Mobile | `POST /api/v1/employment/current-employment-pan-mobile` | Security and Factory/Warehouse worker packages; Provider Integration Service | Implemented — worker; Sandbox scope/test data must be enabled by Surepass |
 | eCourts Search V2 | `POST /api/v1/ecourts/ecourt-search-v2` | Worker App for court screening; Admin Console for review | Implemented — worker/Manual Review |
 | eCourt CNR Search Advanced | `POST /api/v1/ecourts/ecourt-cnr-search-adv` | Admin Console and standalone testing when a CNR is known | Implemented — standalone |
 | eCourt Individual Court Details | `POST /api/v1/ecourts/ecourt-individual-court-details` | Admin Console and standalone report testing | Implemented — standalone; requires provider `client_id` |
@@ -108,16 +109,26 @@ The application must calculate `Valid`, `Expired`, `Not Applicable` or `Manual R
 | Internal route | Purpose | Client |
 |---|---|---|
 | `POST /worker-verifications` | Accept one worker form, store consent and create verification jobs | Worker App / Worker Web Portal |
+| `GET /v1/packages` | List active package versions and required/optional checks | Worker App; Employer / Platform System |
 | `GET /applications/:id/verifications` | Return live application and checkpoint status | Worker App, Employer System, Admin Console |
 | `POST /verifications/:id/retry` | Retry a failed provider job | Admin Console |
 | `POST /provider-tests/surepass/rc-v2` | Direct RC V2 test | Developer/Admin UI |
 | `POST /provider-tests/surepass/face-match` | Direct Face Match multipart test | Developer/Admin UI |
 | `POST /provider-tests/surepass/face-liveness` | Direct Face Liveness multipart test | Developer/Admin UI |
 | `POST /provider-tests/surepass/employment-history` | Direct UAN employment-history test | Developer/Admin UI |
+| `POST /provider-tests/surepass/current-employment` | Direct current-employment test using PAN, mobile or UAN | Developer/Admin UI |
 | `POST /provider-tests/surepass/ecourts/search` | Direct eCourts Search V2 test | Developer/Admin UI |
 | `POST /provider-tests/surepass/ecourts/cnr` | Direct CNR test | Developer/Admin UI |
 | `POST /provider-tests/surepass/ecourts/individual-details` | Fetch a court report using provider `client_id` | Developer/Admin UI |
 | `POST /provider-tests/surepass/digilocker/initialize` | Create a DigiLocker session | Developer/Admin UI |
+
+### 3.3 Implemented persistence
+
+- PostgreSQL is the application and verification system of record.
+- Prisma provides the schema, typed client and migrations.
+- Application details, checkpoint statuses, provider results, failure details, attempts and timestamps survive API restarts.
+- Redis remains dedicated to BullMQ queue state and is not used as the business-data database.
+- Uploaded identity files remain temporary until private S3-compatible object storage is implemented.
 
 ## 4. APIs and workflows still required by the PRD
 
@@ -154,7 +165,7 @@ The following items are required or recommended by the PRD but are not yet imple
 
 | Required check/workflow | PRD module | Used by | Status |
 |---|---|---|---|
-| Current employment verification | Employment check | Worker App, Employer System | Not implemented |
+| Current employment verification | Employment check | Worker App, Employer System | Implemented in adapter, BullMQ package flow and test UI; Sandbox scope/test data pending |
 | Education degree/diploma/institute verification | Education check | Worker App, Admin Console | Not implemented; provider option still needs confirmation |
 | Reference collection and reference calls | Reference check | Worker App, Employer System, Admin Console | Not implemented |
 | Skill/certification verification | Skills and certification | Worker App, Admin Console | Not implemented; depends on worker role |
@@ -174,7 +185,7 @@ The following items are required or recommended by the PRD but are not yet imple
 | Required check/workflow | PRD module | Used by | Status |
 |---|---|---|---|
 | Client creates an application/case | API integration and employer portal | Employer / Platform System | Not implemented as a production API |
-| Package and dynamic-check rules | Verification package selection | Employer System, Admin Console | Not implemented |
+| Package and dynamic-check rules | Verification package selection | Worker App, Employer System, Admin Console | Implemented for six priced MVP packages; package administration is pending |
 | Live status webhook/callback | API integration and confirmation | Employer / Platform System | Not implemented |
 | Insufficiency and resubmission | Results and exception handling | Worker App, Employer System, Admin Console | Not implemented |
 | PDF BGV report and downloadable evidence | Results and confirmation | Employer System, Admin Console | Not implemented |
@@ -194,22 +205,25 @@ The following items are required or recommended by the PRD but are not yet imple
 
 ## 5. Verification package design
 
-A verification package is a predefined set of checks selected by an employer or platform. The package controls which worker fields and consents are required and which BullMQ jobs are created. Package definitions are documented below, but the dynamic package engine is **not yet implemented** in the repository.
+A verification package is a predefined, versioned set of checks selected by an employer or platform. The package controls which worker fields and consents are required and which BullMQ jobs are created. The package engine, prices, advertised check counts, PostgreSQL records, idempotent seed and worker-form selection are implemented. Package creation/editing by an administrator is still pending.
 
-| Package ID | Package name | Included checks | Conditional or optional checks | Current readiness |
-|---|---|---|---|---|
-| `BASIC_WORKER` | Basic Worker | PAN Comprehensive, Driving Licence | Voter ID and Address Matching when the required source data is available | Provider adapters implemented; package rule is pending |
-| `STANDARD_WORKER` | Standard Worker | Basic Worker checks, Employment History, eCourts Search | Passport as an alternate identity document; employment runs only when a valid UAN is provided | Provider adapters implemented; package rule and court-review workflow are pending |
-| `VEHICLE_WORKER` | Vehicle Worker | Basic Worker checks, RC V2 | RC V2 derives insurance, PUC, fitness, permit and blacklist checkpoints | Provider adapters implemented; package rule is pending |
-| `ENHANCED_WORKER` | Enhanced Worker | Standard Worker checks, Face Match, Face Liveness | Vehicle checks can be added for driver roles | Provider adapters implemented; biometric consent and package rule are pending |
-| `FINANCIAL_ADD_ON` | Financial Add-on | CIBIL Credit Score | May only be added with separate explicit credit consent | Provider adapter implemented; add-on rule is pending |
+| Package code | Price | Advertised checks | Business coverage | Intended workforce | Status |
+|---|---:|---:|---|---|---|
+| `BASIC_ID` | ₹199 | 3 | Identity, face/liveness, current address | Low-risk temporary workforce | Implemented, version 1 |
+| `RIDER` | ₹449 | 8 | Basic ID, driving licence, RC, insurance, PUC, court screening | Delivery and bike logistics | Implemented, version 1 |
+| `DRIVER` | ₹549 | 9 | Rider checks plus reference check | Auto, taxi and cab drivers | Implemented, version 1 |
+| `HOME_SERVICES` | ₹499 | 7 | Basic ID, court screening, references, skill/certification | Customer-home access | Implemented, version 1 |
+| `SECURITY` | ₹599 | 8 | Basic ID, address, court screening, employment, references | PSARA-linked security staffing | Implemented, version 1 |
+| `FACTORY_WAREHOUSE` | ₹399 | 6 | Basic ID, court screening and employment | Factory and warehouse workforce | Implemented, version 1 |
+
+The advertised count is the commercial product count. It does not always equal the number of provider calls: Face Match and Face Liveness are two technical jobs grouped under face/liveness, while RC V2 is one API request that produces separate RC, insurance and PUC business checkpoints. Current-address, reference and skill/certification checks currently create `MANUAL_REVIEW` checkpoints because no confirmed automated provider contract is connected for them.
 
 ### 5.1 Package execution rules
 
-- The employer selects a `package_id`; the worker must not decide the employer's required package.
+- The employer selects a package code/version; the current internal JSON field is `packageCode` and the worker form field is `package_code`.
 - The package determines required fields, optional fields, consent requirements and verification jobs.
 - Optional data does not create a job unless the worker supplies it and the required consent is recorded.
-- CIBIL must never run automatically as part of a default worker package.
+- CIBIL is not included in these six workforce packages and must never run without a separately approved financial package and consent.
 - Face Match and Face Liveness require explicit biometric consent.
 - RC V2 runs only for a vehicle-linked role or a package that includes vehicle verification.
 - A possible eCourts match must create `MANUAL_REVIEW`; it must not automatically reject the worker.
@@ -241,10 +255,10 @@ These routes are the planned LIWIP public API for employers, fleet platforms and
 
 | Method and route | Purpose | Expected user | Status |
 |---|---|---|---|
-| `GET /v1/packages` | List active package versions, included checks and required inputs | Employer / Platform System | Proposed |
-| `POST /v1/applications` | Create a worker verification case using a `package_id` | Employer / Platform System | Proposed |
+| `GET /v1/packages` | List active package versions and included required/optional checks | Employer / Platform System | Implemented; API-key protected |
+| `POST /v1/applications` | Create a tenant/client-owned worker verification case | Employer / Platform System | Implemented; API-key protected |
 | `GET /v1/applications/:id` | Return the case summary and overall status | Employer / Platform System | Proposed |
-| `GET /v1/applications/:id/verifications` | Return the status and result of every checkpoint | Employer / Platform System | Proposed |
+| `GET /v1/applications/:id/verifications` | Return an owned case and every checkpoint | Employer / Platform System | Implemented; tenant/client scoped |
 | `POST /v1/applications/:id/resubmissions` | Submit corrected information after an insufficiency | Worker App / Employer System | Proposed |
 | `POST /v1/applications/:id/cancel` | Cancel an eligible case and stop pending work | Employer / Platform System | Proposed |
 | `GET /v1/applications/:id/report` | Download or retrieve the final BGV report | Employer / Platform System | Proposed |
@@ -292,13 +306,13 @@ Employer reads the final status and report from the LIWIP API
 
 ### 6.3 Requirements before external release
 
-- Client/tenant accounts and scoped API credentials
+- Admin APIs for tenant lifecycle, API-key rotation and revocation (tenant/client records, hashed keys and route scopes are implemented)
 - API authentication, authorisation and rate limits
 - Idempotency keys for application creation and retry-safe requests
 - Signed webhooks, delivery retries and replay protection
-- Production database storage, encryption, retention and deletion rules
+- Managed production PostgreSQL, encryption, backups, retention and deletion rules
 - Consent and audit evidence linked to every sensitive check
-- Package versioning and a production recommendation rules engine
+- Package administration/add-on composition and a production recommendation rules engine
 - Insufficiency, resubmission, manual review and dispute workflows
 - Report generation, evidence access controls, usage metering and billing
 
@@ -306,7 +320,7 @@ Employer reads the final status and report from the LIWIP API
 
 1. Mobile OTP and production consent/audit records.
 2. Aadhaar OVSE or complete DigiLocker SDK flow.
-3. Current employment, education and reference workflows.
+3. Activate and validate Current Employment in Sandbox; implement education and reference workflows.
 4. Vehicle relationship, photo matching and full insurance coverage checks.
 5. Police/PCC and manual/field verification workflows.
 6. Employer/platform case APIs, webhooks, reports and insufficiency handling.

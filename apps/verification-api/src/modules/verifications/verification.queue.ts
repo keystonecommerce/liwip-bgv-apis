@@ -1,13 +1,13 @@
-import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { Job, Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
-import { SensitiveVerificationInputs, VerificationJob, VerificationType } from "../types";
-import { ProviderFactory } from "./provider";
-import { VerificationStore } from "./store";
+import { SensitiveVerificationInputs, VerificationJob, VerificationType } from "../../domain/verification.types";
+import { SurepassProvider } from "../../integrations/surepass/surepass.provider";
+import { VerificationStore } from "./verification.repository";
 
 const connectionOptions = {
   host: process.env.REDIS_HOST || "127.0.0.1",
-  port: Number(process.env.REDIS_PORT || 6379),
+  port: Number(process.env.REDIS_PORT || 6380),
   maxRetriesPerRequest: null as null
 };
 
@@ -49,6 +49,13 @@ function applicationToPayload(
     return { selfie: sensitiveInputs.selfie, idCard: sensitiveInputs.idCard } as unknown as Record<string, unknown>;
   }
   if (type === "EMPLOYMENT_HISTORY") return { uan: data.employment?.uan };
+  if (type === "CURRENT_EMPLOYMENT") return {
+    panNumber: personal.panNumber,
+    mobileNumber: personal.phone,
+    uanNumber: data.employment?.uan,
+    employerName: data.employment?.employerName,
+    employeeName: personal.nameAsAadhaar
+  };
   if (type === "ECOURTS_SEARCH") return {
     name: personal.nameAsAadhaar,
     fatherName: data.criminal?.fatherName,
@@ -61,6 +68,7 @@ function applicationToPayload(
 
 @Injectable()
 export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(VerificationQueue.name);
   private readonly connection = new IORedis(connectionOptions);
   private readonly queue = new Queue<VerificationJob>(queueName, {
     connection: this.connection,
@@ -70,7 +78,7 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     @Inject(VerificationStore) private readonly store: VerificationStore,
-    @Inject(ProviderFactory) private readonly providerFactory: ProviderFactory
+    @Inject(SurepassProvider) private readonly provider: SurepassProvider
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -81,20 +89,9 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
     });
 
     this.worker.on("failed", (job, error) => {
-      if (!job) return;
-      const isUnrecoverable = error.name === "UnrecoverableError";
-      const attemptsExhausted = job.attemptsMade >= (job.opts.attempts || 1);
-      if (!isUnrecoverable && !attemptsExhausted) return;
-      const verification = this.store.getVerification(job.data.verificationId);
-      if (!verification) return;
-      const providerError = error as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
-      this.store.setResult(job.data.verificationId, "FAILED", {
-        failureCode: providerError.code || "PROVIDER_UNAVAILABLE",
-        failureReason: error.message,
-        failureResponse: providerError.providerResponse,
-        attemptCount: job.attemptsMade
+      void this.handleFailedJob(job, error).catch((handlerError) => {
+        this.logger.error("Could not persist a failed verification job", handlerError);
       });
-      this.store.recalculateApplicationStatus(job.data.applicationId);
     });
   }
 
@@ -109,49 +106,66 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
   }
 
   private async process(job: Job<VerificationJob>): Promise<void> {
-    const verification = this.store.getVerification(job.data.verificationId);
-    const application = this.store.getApplication(job.data.applicationId);
+    const verification = await this.store.getVerification(job.data.verificationId);
+    const application = await this.store.getApplication(job.data.applicationId);
     if (!verification || !application) throw new Error("Verification or application not found");
     if (verification.status === "VERIFIED") return;
 
-    this.store.setProcessing(verification.id);
-    this.store.updateVerification(verification.id, { attemptCount: job.attemptsMade + 1 });
+    await this.store.setProcessing(verification.id);
+    await this.store.updateVerification(verification.id, { attemptCount: job.attemptsMade + 1 });
 
-    const aadhaarVerification = this.store.getVerificationsForApplication(application.id).find((item) => item.type === "AADHAAR");
+    const applicationVerifications = await this.store.getVerificationsForApplication(application.id);
+    const aadhaarVerification = applicationVerifications.find((item) => item.type === "AADHAAR");
     const officialAddress = formatAddress(aadhaarVerification?.result?.address || aadhaarVerification?.result?.permanent_address);
-    const response = await this.providerFactory.resolve(verification.type, job.data.testOptions?.provider).verify(
+    const response = await this.provider.verify(
       verification.type,
-      applicationToPayload(verification.type, application.data as Record<string, any>, this.store.getSensitiveInputs(application.id), officialAddress),
-      job.data.testOptions
+      applicationToPayload(verification.type, application.data as Record<string, any>, this.store.getSensitiveInputs(application.id), officialAddress)
     );
 
     if (response.status === "verified") {
-      this.store.setResult(verification.id, "VERIFIED", { providerRequestId: response.requestId, result: response.data || {} });
-      if (verification.type === "AADHAAR") await this.queueAddressMatch(application.id, job.data.testOptions);
+      await this.store.setResult(verification.id, "VERIFIED", { providerRequestId: response.requestId, result: response.data || {} });
+      if (verification.type === "AADHAAR") await this.queueAddressMatch(application.id);
     } else if (response.status === "manual_review") {
-      this.store.setResult(verification.id, "MANUAL_REVIEW", { providerRequestId: response.requestId, result: response.data || {} });
+      await this.store.setResult(verification.id, "MANUAL_REVIEW", { providerRequestId: response.requestId, result: response.data || {} });
     } else if (response.status === "pending") {
-      this.store.updateVerification(verification.id, { status: "PENDING", providerRequestId: response.requestId, result: response.data || undefined });
+      await this.store.updateVerification(verification.id, { status: "PENDING", providerRequestId: response.requestId, result: response.data || undefined });
     } else {
-      this.store.setResult(verification.id, "FAILED", {
+      await this.store.setResult(verification.id, "FAILED", {
         providerRequestId: response.requestId,
         result: response.data || {},
         failureCode: "VERIFICATION_FAILED",
         failureReason: "Provider returned a failed verification result"
       });
     }
-    this.store.recalculateApplicationStatus(application.id);
+    await this.store.recalculateApplicationStatus(application.id);
   }
 
-  private async queueAddressMatch(applicationId: string, testOptions?: VerificationJob["testOptions"]): Promise<void> {
-    const addressVerification = this.store.getVerificationsForApplication(applicationId).find((item) => item.type === "ADDRESS_MATCHING");
+  private async queueAddressMatch(applicationId: string): Promise<void> {
+    const verifications = await this.store.getVerificationsForApplication(applicationId);
+    const addressVerification = verifications.find((item) => item.type === "ADDRESS_MATCHING");
     if (!addressVerification || addressVerification.status !== "QUEUED") return;
     await this.addVerificationJob({
       verificationId: addressVerification.id,
       applicationId,
-      type: addressVerification.type,
-      testOptions
+      type: addressVerification.type
     });
+  }
+
+  private async handleFailedJob(job: Job<VerificationJob> | undefined, error: Error): Promise<void> {
+    if (!job) return;
+    const isUnrecoverable = error.name === "UnrecoverableError";
+    const attemptsExhausted = job.attemptsMade >= (job.opts.attempts || 1);
+    if (!isUnrecoverable && !attemptsExhausted) return;
+    const verification = await this.store.getVerification(job.data.verificationId);
+    if (!verification) return;
+    const providerError = error as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
+    await this.store.setResult(job.data.verificationId, "FAILED", {
+      failureCode: providerError.code || "PROVIDER_UNAVAILABLE",
+      failureReason: error.message,
+      failureResponse: providerError.providerResponse,
+      attemptCount: job.attemptsMade
+    });
+    await this.store.recalculateApplicationStatus(job.data.applicationId);
   }
 
   async onModuleDestroy(): Promise<void> {

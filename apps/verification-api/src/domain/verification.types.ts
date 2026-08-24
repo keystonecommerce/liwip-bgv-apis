@@ -1,15 +1,17 @@
-export type VerificationType = "AADHAAR" | "PAN" | "DRIVING_LICENSE" | "VOTER_ID" | "ADDRESS_MATCHING" | "EDUCATION" | "RC_FULL" | "RC_V2" | "CIBIL_SCORE" | "PASSPORT" | "FACE_LIVENESS" | "FACE_MATCH" | "EMPLOYMENT_HISTORY" | "ECOURTS_SEARCH";
+export type VerificationType = "AADHAAR" | "PAN" | "DRIVING_LICENSE" | "VOTER_ID" | "ADDRESS_MATCHING" | "CURRENT_ADDRESS" | "EDUCATION" | "RC_FULL" | "RC_V2" | "CIBIL_SCORE" | "PASSPORT" | "FACE_LIVENESS" | "FACE_MATCH" | "EMPLOYMENT_HISTORY" | "CURRENT_EMPLOYMENT" | "ECOURTS_SEARCH" | "REFERENCE_CHECK" | "SKILL_CERTIFICATION";
 export type VerificationStatus = "PENDING" | "QUEUED" | "PROCESSING" | "VERIFIED" | "FAILED" | "MANUAL_REVIEW";
 export type ApplicationStatus = "PENDING_VERIFICATION" | "VERIFICATION_IN_PROGRESS" | "VERIFIED" | "VERIFICATION_FAILED" | "MANUAL_REVIEW";
-export type MockScenario = "success" | "verification_failed" | "pending" | "manual_review" | "http_400" | "http_401" | "http_429" | "http_500" | "timeout" | "malformed_response";
-
-export interface VerificationTestOptions {
-  mockScenario?: MockScenario;
-  mockDelayMs?: number;
-  provider?: "mock" | "surepass";
+export type PackageCheckMode = "REQUIRED" | "OPTIONAL";
+export type VerificationPackageKind = "BASE" | "ADD_ON";
+export type PackageCheckExecution = "PROVIDER" | "MANUAL";
+export interface ApplicationOwner {
+  tenantId: string;
+  clientId: string;
 }
 
 export interface ApplicationSchema {
+  packageCode?: string;
+  packageVersion?: number;
   personal: {
     phone: string;
     nameAsAadhaar: string;
@@ -29,6 +31,8 @@ export interface ApplicationSchema {
   permanentAddress?: Record<string, unknown>;
   currentLocation?: Record<string, unknown>;
   employment?: Record<string, unknown>;
+  references?: Array<{ name: string; phone?: string; relationship?: string }>;
+  skills?: { certificationName?: string; certificateReference?: string };
   criminal?: { fatherName?: string; year?: string; state?: string; consent?: boolean };
   education?: { highestQualification?: string; courseName?: string };
   jobPreferences?: Record<string, unknown>;
@@ -62,6 +66,29 @@ export interface ApplicationSchema {
   };
 }
 
+export interface PackageCheckRule {
+  type: VerificationType;
+  mode: PackageCheckMode;
+  execution?: PackageCheckExecution;
+}
+
+export interface VerificationPackageRecord {
+  id: string;
+  code: string;
+  version: number;
+  name: string;
+  description?: string;
+  kind: VerificationPackageKind;
+  priceInr?: number;
+  advertisedCheckCount?: number;
+  targetWorkforce?: string;
+  displayOrder: number;
+  isActive: boolean;
+  checks: PackageCheckRule[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface VerificationRecord {
   id: string;
   applicationId: string;
@@ -82,19 +109,21 @@ export interface VerificationRecord {
 
 export interface ApplicationRecord {
   id: string;
+  tenantId: string;
+  clientId: string;
+  packageId?: string;
+  package?: Pick<VerificationPackageRecord, "id" | "code" | "version" | "name" | "kind" | "priceInr" | "advertisedCheckCount">;
   status: ApplicationStatus;
   data: ApplicationSchema;
   verificationIds: string[];
   createdAt: string;
   updatedAt: string;
-  testOptions?: VerificationTestOptions;
 }
 
 export interface VerificationJob {
   verificationId: string;
   applicationId: string;
   type: VerificationType;
-  testOptions?: VerificationTestOptions;
 }
 
 export interface SensitiveVerificationInputs {

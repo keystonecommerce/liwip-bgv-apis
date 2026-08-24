@@ -5,41 +5,45 @@ Developer-ready prototype for asynchronous gig-worker and vehicle background ver
 ## Implemented architecture
 
 ```text
-Worker UI / Internal Client
+Employer / Platform Client
         ↓
-NestJS Verification API
+X-API-Key authentication
         ↓
-Verification Orchestrator
+Tenant + client request context
         ↓
-BullMQ + Redis
+NestJS modular monolith
+  Platform API → Verification Orchestrator → Repository
         ↓
-Verification Worker
+BullMQ + Redis workers
         ↓
-Provider Adapter
+Surepass adapter
         ↓
-Surepass Sandbox or Mock Provider
+Surepass Sandbox / Production API
         ↓
-Normalised Result + Application Status
+Normalised Result
+        ↓
+PostgreSQL Application Store
         ↓
 NestJS Status API
         ↓
-Worker UI / Internal Client
+External Platform / Separate Worker UI
 ```
 
 The browser never receives the Surepass bearer token. Provider credentials and provider-specific payloads remain in the NestJS backend.
 
 ## Current capabilities
 
-- One worker-verification form with required and optional checks
-- NestJS application and verification endpoints
+- Worker-verification intake and status APIs
+- Multi-tenant NestJS platform endpoints with hashed client API keys
+- Tenant/client ownership enforced on every application
 - BullMQ background jobs backed by Redis
-- Surepass and mock provider adapters
+- PostgreSQL persistence through Prisma
+- One backend-only Surepass provider adapter
 - Retry and failure handling
-- Live verification status in the UI
-- Mock success, failure, delay, pending and manual-review scenarios
-- Provider-test UI for direct Sandbox diagnosis
+- Live verification status endpoints
+- Internal provider-test endpoints for Sandbox diagnosis
 
-Implemented provider integrations include PAN Comprehensive, Driving Licence, Voter ID, Address Matching, RC V2, Passport Details, CIBIL Score, Face Match, Face Liveness, Employment History by UAN V2, eCourts Search V2, CNR Search, Individual Court Details, DigiLocker Initialize, e-Aadhaar upload and GST OCR. Some are optional or standalone tests; provider scope is still required for each Surepass Sandbox product.
+Implemented provider integrations include PAN Comprehensive, Driving Licence, Voter ID, Address Matching, RC V2, Passport Details, CIBIL Score, Face Match, Face Liveness, Employment History by UAN V2, Current Employment PAN Mobile, eCourts Search V2, CNR Search, Individual Court Details, DigiLocker Initialize, e-Aadhaar upload and GST OCR. Some are optional or standalone tests; provider scope is still required for each Surepass Sandbox product.
 
 See [API-INVENTORY-AND-FLOW-MAPPING.md](./API-INVENTORY-AND-FLOW-MAPPING.md) for the exact endpoint, client, package and implementation-status mapping.
 
@@ -47,16 +51,21 @@ See [API-INVENTORY-AND-FLOW-MAPPING.md](./API-INVENTORY-AND-FLOW-MAPPING.md) for
 
 ```text
 apps/
-  verification-ui/             Worker form, live status and provider-test UI
-  verification-api/            NestJS API, orchestration, queue, store and adapters
-  mock-verification-server/    Development-only provider simulator
-smoke-tests/                    End-to-end smoke-test script
+  verification-api/src/
+    common/                     Database, authentication and request context
+    config/                     Environment loading
+    domain/                     Provider-independent domain types
+    integrations/surepass/      The only provider-specific adapter
+    modules/platform/           Authenticated multi-tenant public API
+    modules/verifications/      Orchestration, queue, repository and internal workflow APIs
+smoke-tests/                    Authentication and tenant-isolation tests
+prisma/                         PostgreSQL schema and committed migrations
 ```
 
 ## Requirements
 
 - Node.js 20+
-- Docker Desktop, or another Redis instance
+- Docker Desktop, or compatible PostgreSQL and Redis instances
 
 ## Local setup
 
@@ -74,41 +83,67 @@ Copy-Item .env.example .env
 
 Add the Surepass Sandbox bearer token to `.env` only when testing Surepass. `.env` is ignored by Git and must never be committed.
 
-Start Redis:
+Start PostgreSQL and Redis:
 
 ```powershell
-docker compose up -d redis
+docker compose up -d postgres redis
+npm.cmd run db:generate
+npm.cmd run db:deploy
 ```
 
-If Redis is already running on port `6379`, use that instance instead of starting another container.
+The project uses host ports `5440` for PostgreSQL and `6380` for Redis so it does not conflict with other Keystone development containers.
 
-Start each service in a separate terminal:
+Seed the development tenants, clients, hashed API keys and packages:
 
 ```powershell
-npm.cmd run dev:mock
+npm.cmd run db:seed
+```
+
+Start the backend API:
+
+```powershell
 npm.cmd run dev:api
-npm.cmd run dev:ui
 ```
 
-Open `http://localhost:3002`.
+The worker frontend is intentionally maintained separately and should call the authenticated `/v1/*` platform endpoints.
 
 Default local ports:
 
 | Service | URL |
 |---|---|
 | Verification API | `http://localhost:3000` |
-| Verification UI | `http://localhost:3002` |
-| Mock Provider | `http://localhost:4001` |
-| Redis | `127.0.0.1:6379` |
+| PostgreSQL | `127.0.0.1:5440` |
+| Redis | `127.0.0.1:6380` |
 
-## Core internal endpoints
+## Database commands
+
+| Command | Purpose |
+|---|---|
+| `npm.cmd run db:generate` | Regenerate the Prisma client after schema changes |
+| `npm.cmd run db:migrate -- --name change-name` | Create and apply a development migration |
+| `npm.cmd run db:deploy` | Apply committed migrations in a review/deployment environment |
+| `npm.cmd run db:studio` | Open Prisma Studio for local data inspection |
+
+Provision a new tenant/client and generate a hashed API credential:
+
+```powershell
+npm.cmd run client:provision -- --tenant-slug acme --tenant-name "Acme Logistics" --client-code PLATFORM --client-name "Acme Platform"
+```
+
+The raw API key is displayed once. Only its SHA-256 hash and a short prefix are stored in PostgreSQL.
+
+## Multi-tenant platform endpoints
+
+All routes below require `X-API-Key`. The key resolves a tenant and client; application reads and writes are scoped to both identifiers.
 
 | Method | Route | Purpose |
 |---|---|---|
-| `POST` | `/worker-verifications` | Submit one worker form and create verification jobs |
-| `POST` | `/applications` | Create an application from the internal schema |
-| `GET` | `/applications/:id/verifications` | Read the application and live checkpoint statuses |
-| `POST` | `/verifications/:id/retry` | Retry a failed verification job |
+| `GET` | `/v1/packages` | List active, versioned verification packages and their check rules |
+| `POST` | `/v1/applications` | Create an application owned by the authenticated tenant/client |
+| `GET` | `/v1/applications/:id/verifications` | Read an owned application and its checkpoints |
+| `POST` | `/v1/verifications/:id/retry` | Retry an owned verification checkpoint |
+
+`/worker-*`, unversioned routes and `/provider-tests/surepass/*` are internal development routes. They are disabled when `NODE_ENV=production` unless explicitly enabled.
 
 Routes under `/provider-tests/surepass/*` are development/admin diagnostics. They are not the proposed public enterprise API.
 
@@ -120,7 +155,7 @@ Run static checks:
 npm.cmd run typecheck
 ```
 
-With Redis, the mock provider and the API running, execute:
+With PostgreSQL, Redis and the API running, execute:
 
 ```powershell
 npm.cmd run smoke
@@ -128,9 +163,8 @@ npm.cmd run smoke
 
 ## Current limitations
 
-- Application and verification records use an in-memory store and are lost when the API restarts.
-- Verification packages are documented but the dynamic package engine is not implemented.
-- Public client authentication, tenant isolation, API keys and rate limits are pending.
+- The versioned package engine is implemented for six priced MVP packages; package administration is still pending.
+- API-key authentication, scope enforcement, tenant/client isolation and CLI provisioning are implemented; key rotation/revocation APIs and rate limits are pending.
 - Webhooks, final reports, insufficiency/resubmission, Gig Cards and renewals are pending.
-- The mock provider is development-only and must not be exposed as a production option.
+- Uploaded identity files remain temporary in API memory until private object storage is implemented.
 - This repository is a Sandbox prototype and is not production-ready.
