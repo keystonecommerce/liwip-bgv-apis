@@ -6,12 +6,14 @@ import {
   ApplicationOwner,
   ApplicationSchema,
   ApplicationStatus,
+  FinalRecommendation,
   PackageCheckRule,
   SensitiveVerificationInputs,
   VerificationRecord,
   VerificationPackageKind,
   VerificationPackageRecord,
   VerificationStatus,
+  VerificationCardRecord,
   VerificationType
 } from "../../domain/verification.types";
 import { PrismaService } from "../../common/database/prisma.service";
@@ -27,6 +29,17 @@ type StoredApplication = {
   updatedAt: Date;
   package?: StoredPackage | null;
   verifications?: Array<{ id: string }>;
+  verificationCard?: StoredVerificationCard | null;
+};
+
+type StoredVerificationCard = {
+  id: string;
+  applicationId: string;
+  cardNumber: string;
+  publicId: string;
+  status: string;
+  issuedAt: Date;
+  expiresAt: Date;
 };
 
 type StoredPackage = {
@@ -130,6 +143,7 @@ export class VerificationStore {
         advertisedCheckCount: verificationPackage.advertisedCheckCount
       },
       status: types.length ? "PENDING_VERIFICATION" : "VERIFIED",
+      recommendation: types.length ? "PENDING" : "PASS",
       data,
       verificationIds,
       createdAt: now.toISOString(),
@@ -140,7 +154,7 @@ export class VerificationStore {
   async getApplication(id: string, owner?: ApplicationOwner): Promise<ApplicationRecord | undefined> {
     const application = await this.prisma.application.findFirst({
       where: { id, ...(owner ? { tenantId: owner.tenantId, clientId: owner.clientId } : {}) },
-      include: { package: true, verifications: { select: { id: true }, orderBy: { createdAt: "asc" } } }
+      include: { package: true, verificationCard: true, verifications: { select: { id: true }, orderBy: { createdAt: "asc" } } }
     });
     return application ? this.mapApplication(application) : undefined;
   }
@@ -193,7 +207,7 @@ export class VerificationStore {
     const application = await this.prisma.application.update({
       where: { id: applicationId },
       data: { status, updatedAt: new Date() },
-      include: { package: true, verifications: { select: { id: true }, orderBy: { createdAt: "asc" } } }
+      include: { package: true, verificationCard: true, verifications: { select: { id: true }, orderBy: { createdAt: "asc" } } }
     });
     return this.mapApplication(application);
   }
@@ -210,7 +224,33 @@ export class VerificationStore {
     else if (checks.length > 0 && statuses.every((value) => value === "VERIFIED")) status = "VERIFIED";
     else if (statuses.every((value) => value === "QUEUED" || value === "PENDING")) status = "PENDING_VERIFICATION";
 
-    return this.updateApplicationStatus(applicationId, status);
+    await this.updateApplicationStatus(applicationId, status);
+    if (status === "VERIFIED") await this.issueVerificationCard(applicationId, application.tenantId, application.clientId);
+    const updated = await this.getApplication(applicationId);
+    if (!updated) throw new Error(`Application ${applicationId} not found after status update`);
+    return updated;
+  }
+
+  private async issueVerificationCard(applicationId: string, tenantId: string, clientId: string): Promise<void> {
+    const issuedAt = new Date();
+    const expiresAt = new Date(issuedAt);
+    expiresAt.setUTCFullYear(expiresAt.getUTCFullYear() + 1);
+    const cardNumber = `LIWIP-${issuedAt.getUTCFullYear()}-${randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase()}`;
+    await this.prisma.verificationCard.upsert({
+      where: { applicationId },
+      update: {},
+      create: {
+        id: `card_${randomUUID()}`,
+        applicationId,
+        tenantId,
+        clientId,
+        cardNumber,
+        publicId: randomUUID(),
+        status: "ACTIVE",
+        issuedAt,
+        expiresAt
+      }
+    });
   }
 
   async setProcessing(id: string): Promise<VerificationRecord> {
@@ -275,10 +315,31 @@ export class VerificationStore {
         advertisedCheckCount: record.package.advertisedCheckCount || undefined
       } : undefined,
       status: record.status as ApplicationStatus,
+      recommendation: this.recommendationFor(record.status as ApplicationStatus),
+      card: record.verificationCard ? this.mapCard(record.verificationCard) : undefined,
       data: record.data as unknown as ApplicationSchema,
       verificationIds: record.verifications?.map((verification) => verification.id) || [],
       createdAt: record.createdAt.toISOString(),
       updatedAt: record.updatedAt.toISOString()
+    };
+  }
+
+  private recommendationFor(status: ApplicationStatus): FinalRecommendation {
+    if (status === "VERIFIED") return "PASS";
+    if (status === "VERIFICATION_FAILED") return "FAIL";
+    if (status === "MANUAL_REVIEW") return "MANUAL_REVIEW";
+    return "PENDING";
+  }
+
+  private mapCard(record: StoredVerificationCard): VerificationCardRecord {
+    return {
+      id: record.id,
+      applicationId: record.applicationId,
+      cardNumber: record.cardNumber,
+      publicId: record.publicId,
+      status: record.status as VerificationCardRecord["status"],
+      issuedAt: record.issuedAt.toISOString(),
+      expiresAt: record.expiresAt.toISOString()
     };
   }
 

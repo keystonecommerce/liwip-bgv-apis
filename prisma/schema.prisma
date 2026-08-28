@@ -8,19 +8,21 @@ datasource db {
 }
 
 model Application {
-  id            String         @id
-  tenantId      String
-  clientId      String
-  packageId     String?
-  status        String
-  data          Json
-  legacyTestOptions Json?      @map("testOptions")
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  package       VerificationPackage? @relation(fields: [packageId], references: [id])
-  tenant        Tenant         @relation(fields: [tenantId], references: [id])
-  client        Client         @relation(fields: [clientId], references: [id])
-  verifications Verification[]
+  id                String                @id
+  tenantId          String
+  clientId          String
+  packageId         String?
+  status            String
+  data              Json
+  legacyTestOptions Json?                 @map("testOptions")
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  package           VerificationPackage?  @relation(fields: [packageId], references: [id])
+  tenant            Tenant                @relation(fields: [tenantId], references: [id])
+  client            Client                @relation(fields: [clientId], references: [id])
+  verifications     Verification[]
+  documents         ApplicationDocument[]
+  verificationCard  VerificationCard?
 
   @@index([tenantId, createdAt])
   @@index([clientId, createdAt])
@@ -29,68 +31,90 @@ model Application {
   @@index([createdAt])
 }
 
+model VerificationCard {
+  id            String      @id
+  applicationId String      @unique
+  tenantId      String
+  clientId      String
+  cardNumber    String      @unique
+  publicId      String      @unique
+  status        String      @default("ACTIVE")
+  issuedAt      DateTime    @default(now())
+  expiresAt     DateTime
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, clientId, issuedAt])
+  @@index([status, expiresAt])
+}
+
 model Tenant {
-  id           String        @id
-  slug         String        @unique
-  name         String
-  status       String        @default("ACTIVE")
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  clients      Client[]
-  applications Application[]
+  id                  String                @id
+  slug                String                @unique
+  name                String
+  status              String                @default("ACTIVE")
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  clients             Client[]
+  applications        Application[]
+  aadhaarOvseSessions AadhaarOvseSession[]
+  documents           ApplicationDocument[]
 
   @@index([status])
 }
 
 model Client {
-  id           String        @id
-  tenantId     String
-  code         String
-  name         String
-  status       String        @default("ACTIVE")
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  tenant       Tenant        @relation(fields: [tenantId], references: [id])
-  apiKeys      ApiKey[]
-  applications Application[]
+  id                  String                @id
+  tenantId            String
+  code                String
+  name                String
+  status              String                @default("ACTIVE")
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  tenant              Tenant                @relation(fields: [tenantId], references: [id])
+  apiKeys             ApiKey[]
+  applications        Application[]
+  aadhaarOvseSessions AadhaarOvseSession[]
+  documents           ApplicationDocument[]
 
   @@unique([tenantId, code])
   @@index([tenantId, status])
 }
 
 model ApiKey {
-  id         String   @id
+  id         String    @id
   clientId   String
   name       String
   keyPrefix  String
-  keyHash    String   @unique
+  keyHash    String    @unique
   scopes     Json
-  isActive   Boolean  @default(true)
+  isActive   Boolean   @default(true)
   expiresAt  DateTime?
   lastUsedAt DateTime?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  client     Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
   @@index([clientId, isActive])
 }
 
 model VerificationPackage {
-  id           String        @id
-  code         String
-  version      Int
-  name         String
-  description  String?
-  kind         String        @default("BASE")
-  priceInr     Int?
+  id                   String        @id
+  code                 String
+  version              Int
+  name                 String
+  description          String?
+  kind                 String        @default("BASE")
+  priceInr             Int?
   advertisedCheckCount Int?
-  targetWorkforce String?
-  displayOrder Int           @default(0)
-  isActive     Boolean       @default(true)
-  checks       Json
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  applications Application[]
+  targetWorkforce      String?
+  displayOrder         Int           @default(0)
+  isActive             Boolean       @default(true)
+  checks               Json
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+  applications         Application[]
 
   @@unique([code, version])
   @@index([code, isActive])
@@ -117,4 +141,60 @@ model Verification {
   @@index([applicationId])
   @@index([status])
   @@index([type])
+}
+
+model AadhaarOvseSession {
+  id                String    @id
+  tenantId          String
+  clientId          String
+  providerClientId  String    @unique
+  referenceId       String
+  channel           String
+  status            String    @default("pending")
+  requestedClaims   Json
+  statusDescription String?
+  result            Json?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  completedAt       DateTime?
+  resultRetrievedAt DateTime?
+  tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  client            Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([clientId, createdAt])
+  @@index([status])
+}
+
+model ApplicationDocument {
+  id                String      @id
+  tenantId          String
+  clientId          String
+  applicationId     String
+  documentType      String
+  status            String      @default("PENDING_UPLOAD")
+  bucket            String
+  objectKey         String
+  originalFileName  String
+  contentType       String
+  declaredSizeBytes Int
+  sizeBytes         Int?
+  versionId         String?
+  etag              String?
+  checksumSha256    String?
+  storageEncryption String?
+  kmsKeyArn         String?
+  expiresAt         DateTime
+  uploadedAt        DateTime?
+  deletedAt         DateTime?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  tenant            Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  client            Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  application       Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@unique([bucket, objectKey])
+  @@index([tenantId, clientId, createdAt])
+  @@index([applicationId, createdAt])
+  @@index([status, expiresAt])
 }

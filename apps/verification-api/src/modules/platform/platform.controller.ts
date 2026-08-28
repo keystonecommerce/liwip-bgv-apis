@@ -38,4 +38,18 @@ export class PlatformController {
   retryVerification(@Param("id") id: string, @CurrentClient() client: ClientContext) {
     return this.verificationService.retryVerification(id, { tenantId: client.tenantId, clientId: client.clientId });
   }
+
+  @Post("verifications/:id/decision")
+  @RequireScopes("verifications:review")
+  decideVerification(
+    @Param("id") id: string,
+    @Body() payload: { decision?: string; note?: string },
+    @CurrentClient() client: ClientContext
+  ) {
+    return this.verificationService.reviewVerification(
+      id,
+      payload,
+      { tenantId: client.tenantId, clientId: client.clientId }
+    );
+  }
 }

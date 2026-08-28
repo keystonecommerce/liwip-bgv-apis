@@ -5,6 +5,7 @@ const prisma = new PrismaClient();
 
 const provider = (type: string) => ({ type, mode: "REQUIRED", execution: "PROVIDER" });
 const manual = (type: string) => ({ type, mode: "REQUIRED", execution: "MANUAL" });
+const developmentScopes = ["packages:read", "applications:write", "applications:read", "verifications:retry", "digilocker:write", "aadhaar:write", "aadhaar:read", "otp:write", "documents:write", "documents:read"];
 
 const basicChecks = [
   provider("PAN"),
@@ -131,8 +132,8 @@ async function main(): Promise<void> {
   const keyHash = createHash("sha256").update(developmentApiKey).digest("hex");
   await prisma.apiKey.upsert({
     where: { keyHash },
-    update: { clientId: client.id, name: "Local development key", isActive: true, scopes: ["packages:read", "applications:write", "applications:read", "verifications:retry"] },
-    create: { id: "api_key_keystone_local", clientId: client.id, name: "Local development key", keyPrefix: developmentApiKey.slice(0, 8), keyHash, scopes: ["packages:read", "applications:write", "applications:read", "verifications:retry"] }
+    update: { clientId: client.id, name: "Local development key", isActive: true, scopes: developmentScopes },
+    create: { id: "api_key_keystone_local", clientId: client.id, name: "Local development key", keyPrefix: developmentApiKey.slice(0, 8), keyHash, scopes: developmentScopes }
   });
   const partnerTenant = await prisma.tenant.upsert({
     where: { slug: "demo-partner" },
@@ -147,8 +148,8 @@ async function main(): Promise<void> {
   const partnerKeyHash = createHash("sha256").update(secondDevelopmentApiKey).digest("hex");
   await prisma.apiKey.upsert({
     where: { keyHash: partnerKeyHash },
-    update: { clientId: partnerClient.id, name: "Second-tenant development key", isActive: true, scopes: ["packages:read", "applications:write", "applications:read", "verifications:retry"] },
-    create: { id: "api_key_demo_partner_local", clientId: partnerClient.id, name: "Second-tenant development key", keyPrefix: secondDevelopmentApiKey.slice(0, 8), keyHash: partnerKeyHash, scopes: ["packages:read", "applications:write", "applications:read", "verifications:retry"] }
+    update: { clientId: partnerClient.id, name: "Second-tenant development key", isActive: true, scopes: developmentScopes },
+    create: { id: "api_key_demo_partner_local", clientId: partnerClient.id, name: "Second-tenant development key", keyPrefix: secondDevelopmentApiKey.slice(0, 8), keyHash: partnerKeyHash, scopes: developmentScopes }
   });
   const activeCodes = packages.map((item) => item.code);
   await prisma.verificationPackage.updateMany({

@@ -38,6 +38,8 @@ The browser never receives the Surepass bearer token. Provider credentials and p
 - Tenant/client ownership enforced on every application
 - BullMQ background jobs backed by Redis
 - PostgreSQL persistence through Prisma
+- Private SSE-KMS S3 document storage through short-lived presigned URLs
+- Tenant/client-scoped document metadata, upload confirmation, download and deletion APIs
 - One backend-only Surepass provider adapter
 - Retry and failure handling
 - Live verification status endpoints
@@ -45,7 +47,7 @@ The browser never receives the Surepass bearer token. Provider credentials and p
 
 Implemented provider integrations include PAN Comprehensive, Driving Licence, Voter ID, Address Matching, RC V2, Passport Details, CIBIL Score, Face Match, Face Liveness, Employment History by UAN V2, Current Employment PAN Mobile, eCourts Search V2, CNR Search, Individual Court Details, DigiLocker Initialize, e-Aadhaar upload and GST OCR. Some are optional or standalone tests; provider scope is still required for each Surepass Sandbox product.
 
-See [API-INVENTORY-AND-FLOW-MAPPING.md](./API-INVENTORY-AND-FLOW-MAPPING.md) for the exact endpoint, client, package and implementation-status mapping.
+See [API-INVENTORY-AND-FLOW-MAPPING.md](./docs/API-INVENTORY-AND-FLOW-MAPPING.md) for the exact endpoint, client, package and implementation-status mapping.
 
 ## Repository structure
 
@@ -57,6 +59,7 @@ apps/
     domain/                     Provider-independent domain types
     integrations/surepass/      The only provider-specific adapter
     modules/platform/           Authenticated multi-tenant public API
+    modules/document-storage/   Private S3 document lifecycle and metadata APIs
     modules/verifications/      Orchestration, queue, repository and internal workflow APIs
 smoke-tests/                    Authentication and tenant-isolation tests
 prisma/                         PostgreSQL schema and committed migrations
@@ -124,6 +127,8 @@ Default local ports:
 | `npm.cmd run db:deploy` | Apply committed migrations in a review/deployment environment |
 | `npm.cmd run db:studio` | Open Prisma Studio for local data inspection |
 
+The development migration history is currently squashed into one initial migration. If an existing local Docker volume was created with the older migration history, run `npx.cmd prisma migrate reset --force` once after starting PostgreSQL. This resets development data and reapplies the consolidated migration and seed.
+
 Provision a new tenant/client and generate a hashed API credential:
 
 ```powershell
@@ -142,6 +147,11 @@ All routes below require `X-API-Key`. The key resolves a tenant and client; appl
 | `POST` | `/v1/applications` | Create an application owned by the authenticated tenant/client |
 | `GET` | `/v1/applications/:id/verifications` | Read an owned application and its checkpoints |
 | `POST` | `/v1/verifications/:id/retry` | Retry an owned verification checkpoint |
+| `POST` | `/v1/applications/:id/documents/upload-url` | Create a tenant-scoped, short-lived S3 upload URL |
+| `POST` | `/v1/applications/:id/documents/:documentId/complete` | Confirm and validate an S3 upload |
+| `GET` | `/v1/applications/:id/documents` | List document metadata for an owned application |
+| `GET` | `/v1/applications/:id/documents/:documentId/download-url` | Create a short-lived private download URL |
+| `DELETE` | `/v1/applications/:id/documents/:documentId` | Delete the current S3 object and mark its metadata deleted |
 
 `/worker-*`, unversioned routes and `/provider-tests/surepass/*` are internal development routes. They are disabled when `NODE_ENV=production` unless explicitly enabled.
 
@@ -166,5 +176,5 @@ npm.cmd run smoke
 - The versioned package engine is implemented for six priced MVP packages; package administration is still pending.
 - API-key authentication, scope enforcement, tenant/client isolation and CLI provisioning are implemented; key rotation/revocation APIs and rate limits are pending.
 - Webhooks, final reports, insufficiency/resubmission, Gig Cards and renewals are pending.
-- Uploaded identity files remain temporary in API memory until private object storage is implemented.
+- Private S3 document APIs are implemented; the separate worker portal still needs to replace its legacy multipart upload path with the presigned-upload flow.
 - This repository is a Sandbox prototype and is not production-ready.

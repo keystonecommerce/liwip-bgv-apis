@@ -1,6 +1,8 @@
 import { Injectable } from "@nestjs/common";
 import { VerificationType } from "../../domain/verification.types";
 import { UnrecoverableError } from "bullmq";
+import type { AadhaarOvseInitializeData } from "./aadhaar-ovse.types";
+import type { DigiLockerInitializeData } from "./digilocker.types";
 
 export interface ProviderResponse {
   requestId?: string;
@@ -428,7 +430,37 @@ export class SurepassProvider implements VerificationProvider {
     return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
   }
 
-  async initializeDigiLocker(payload: Record<string, unknown>): Promise<GstProviderResponse> {
+  async initializeAadhaarOvse(payload: AadhaarOvseInitializeData): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+    const response = await fetch(`${this.baseUrl}/api/v1/aadhaar-v4/initialize`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+  }
+
+  async getAadhaarOvseStatus(clientId: string): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+    const query = new URLSearchParams({ client_id: clientId });
+    const response = await fetch(`${this.baseUrl}/api/v1/aadhaar-v4/status?${query.toString()}`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${this.bearerToken}` }
+    });
+    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+  }
+
+  async getAadhaarOvseResult(clientId: string): Promise<GstProviderResponse> {
+    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
+    const query = new URLSearchParams({ client_id: clientId });
+    const response = await fetch(`${this.baseUrl}/api/v1/aadhaar-v4/result?${query.toString()}`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${this.bearerToken}` }
+    });
+    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+  }
+
+  async initializeDigiLocker(payload: DigiLockerInitializeData): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
     const response = await fetch(`${this.baseUrl}/api/v1/digilocker/initialize`, {
       method: "POST",

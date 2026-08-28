@@ -35,6 +35,7 @@ apps/verification-api/src/
     surepass/                   Surepass payload mapping and response normalisation
   modules/
     platform/                   Authenticated public multi-tenant API
+    document-storage/           Tenant-aware private S3 upload/download lifecycle
     verifications/              Orchestration, repository, BullMQ worker and internal routes
   app.module.ts                 Monolith composition root
   main.ts                       HTTP bootstrap
@@ -47,7 +48,7 @@ apps/verification-api/src/
 - API keys must be active, unexpired and linked to active clients and tenants.
 - Public application and verification queries include both `tenantId` and `clientId` filters.
 - A cross-tenant lookup returns `404` so it does not disclose whether another tenant's ID exists.
-- Route scopes currently include `packages:read`, `applications:write`, `applications:read` and `verifications:retry`.
+- Route scopes include `packages:read`, `applications:write`, `applications:read`, `verifications:retry`, `documents:write` and `documents:read` plus provider-specific scopes.
 - Internal worker and provider-diagnostic routes are disabled in production by default.
 
 ## Adding a feature
@@ -62,7 +63,7 @@ apps/verification-api/src/
 ## Current production gaps
 
 - Worker session/link authentication and tenant-aware document upload flow
-- Private object storage for uploaded identity documents
+- Worker-portal migration from the legacy multipart upload to the implemented presigned S3 document flow
 - API-key rotation/revocation administration endpoints
 - Rate limiting, idempotency keys and request audit events
 - Webhooks/outbox, insufficiency, resubmission and manual-review operations

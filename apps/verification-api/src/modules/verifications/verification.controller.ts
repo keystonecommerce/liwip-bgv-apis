@@ -4,6 +4,7 @@ import type { Response } from "express";
 import { ApplicationSchema } from "../../domain/verification.types";
 import { InternalRouteGuard } from "../../common/auth/internal-route.guard";
 import { SurepassProvider } from "../../integrations/surepass/surepass.provider";
+import type { DigiLockerInitializeData } from "../../integrations/surepass/digilocker.types";
 import { VerificationService } from "./verification.service";
 
 @Controller()
@@ -429,11 +430,11 @@ export class VerificationController {
   }
 
   @Post("provider-tests/surepass/digilocker/initialize")
-  async testSurepassDigiLocker(@Body() payload: { data?: Record<string, unknown> }, @Res({ passthrough: true }) response: Response) {
+  async testSurepassDigiLocker(@Body() payload: { data?: Partial<DigiLockerInitializeData> }, @Res({ passthrough: true }) response: Response) {
     const data = payload?.data || {};
     if (data.signup_flow !== true && data.signup_flow !== false) throw new BadRequestException("data.signup_flow must be true or false");
     const provider = this.provider;
-    const result = await provider.initializeDigiLocker(data);
+    const result = await provider.initializeDigiLocker({ ...data, signup_flow: data.signup_flow });
     response.status(result.statusCode);
     return result.body || { status_code: result.statusCode, success: false, message: "Surepass returned an empty response" };
   }

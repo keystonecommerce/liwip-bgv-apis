@@ -1,6 +1,7 @@
 export type VerificationType = "AADHAAR" | "PAN" | "DRIVING_LICENSE" | "VOTER_ID" | "ADDRESS_MATCHING" | "CURRENT_ADDRESS" | "EDUCATION" | "RC_FULL" | "RC_V2" | "CIBIL_SCORE" | "PASSPORT" | "FACE_LIVENESS" | "FACE_MATCH" | "EMPLOYMENT_HISTORY" | "CURRENT_EMPLOYMENT" | "ECOURTS_SEARCH" | "REFERENCE_CHECK" | "SKILL_CERTIFICATION";
 export type VerificationStatus = "PENDING" | "QUEUED" | "PROCESSING" | "VERIFIED" | "FAILED" | "MANUAL_REVIEW";
 export type ApplicationStatus = "PENDING_VERIFICATION" | "VERIFICATION_IN_PROGRESS" | "VERIFIED" | "VERIFICATION_FAILED" | "MANUAL_REVIEW";
+export type FinalRecommendation = "PENDING" | "PASS" | "FAIL" | "MANUAL_REVIEW";
 export type PackageCheckMode = "REQUIRED" | "OPTIONAL";
 export type VerificationPackageKind = "BASE" | "ADD_ON";
 export type PackageCheckExecution = "PROVIDER" | "MANUAL";
@@ -114,10 +115,22 @@ export interface ApplicationRecord {
   packageId?: string;
   package?: Pick<VerificationPackageRecord, "id" | "code" | "version" | "name" | "kind" | "priceInr" | "advertisedCheckCount">;
   status: ApplicationStatus;
+  recommendation: FinalRecommendation;
+  card?: VerificationCardRecord;
   data: ApplicationSchema;
   verificationIds: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface VerificationCardRecord {
+  id: string;
+  applicationId: string;
+  cardNumber: string;
+  publicId: string;
+  status: "ACTIVE" | "SUSPENDED" | "EXPIRED";
+  issuedAt: string;
+  expiresAt: string;
 }
 
 export interface VerificationJob {

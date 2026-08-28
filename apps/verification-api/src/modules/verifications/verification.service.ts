@@ -91,6 +91,39 @@ export class VerificationService {
     return this.getApplicationDetails(verification.applicationId);
   }
 
+  async reviewVerification(
+    id: string,
+    input: { decision?: string; note?: string },
+    owner: ApplicationOwner
+  ) {
+    const verification = await this.store.getVerification(id, owner);
+    if (!verification) throw new NotFoundException(`Verification ${id} not found`);
+    if (verification.status !== "MANUAL_REVIEW") {
+      throw new BadRequestException("Only a manual-review checkpoint can receive a review decision");
+    }
+    const decision = String(input?.decision || "").trim().toUpperCase();
+    if (decision !== "VERIFIED" && decision !== "FAILED") {
+      throw new BadRequestException("decision must be VERIFIED or FAILED");
+    }
+    const note = String(input?.note || "").trim();
+    if (note.length < 3 || note.length > 500) {
+      throw new BadRequestException("note must contain between 3 and 500 characters");
+    }
+    await this.store.setResult(verification.id, decision, {
+      result: {
+        ...(verification.result || {}),
+        reviewDecision: decision,
+        reviewNote: note,
+        reviewedAt: new Date().toISOString(),
+        reviewedByClientId: owner.clientId
+      },
+      failureCode: decision === "FAILED" ? "MANUAL_REVIEW_REJECTED" : undefined,
+      failureReason: decision === "FAILED" ? note : undefined
+    });
+    await this.store.recalculateApplicationStatus(verification.applicationId);
+    return this.getApplicationDetails(verification.applicationId, owner);
+  }
+
   listPackages() {
     return this.store.listActivePackages();
   }

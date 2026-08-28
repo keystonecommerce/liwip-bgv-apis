@@ -127,8 +127,10 @@ The application must calculate `Valid`, `Expired`, `Not Applicable` or `Manual R
 - PostgreSQL is the application and verification system of record.
 - Prisma provides the schema, typed client and migrations.
 - Application details, checkpoint statuses, provider results, failure details, attempts and timestamps survive API restarts.
+- Private worker documents are stored in S3 with SSE-KMS; PostgreSQL stores tenant-owned document references and lifecycle metadata only.
+- Presigned upload/download URLs, upload confirmation, listing and deletion APIs are implemented under `/v1/applications/:id/documents`.
 - Redis remains dedicated to BullMQ queue state and is not used as the business-data database.
-- Uploaded identity files remain temporary until private S3-compatible object storage is implemented.
+- The separate worker portal still needs to replace its legacy multipart upload path with the presigned S3 APIs.
 
 ## 4. APIs and workflows still required by the PRD
 
@@ -138,7 +140,7 @@ The following items are required or recommended by the PRD but are not yet imple
 
 | Required check/workflow | PRD module | Used by | Status |
 |---|---|---|---|
-| Mobile OTP send and submit | Worker onboarding, authentication and consent | Worker App / Worker Web Portal | Not implemented |
+| Mobile OTP send, verify and resend through MSG91 | Worker onboarding, authentication and consent | Worker App / Worker Web Portal | Implemented |
 | Purpose-specific consent records | eKYC, biometric, credit and employment consent | Worker App, Admin Console, Audit Service | Partially implemented; needs production audit persistence |
 | Save and resume worker application | Worker onboarding | Worker App / Worker Web Portal | Not implemented |
 | Worker notification status | OTP, insufficiency, completion and expiry notifications | Worker App, Employer System | Not implemented |
