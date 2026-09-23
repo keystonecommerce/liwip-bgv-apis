@@ -24,6 +24,22 @@ export class SurepassProvider implements VerificationProvider {
   private readonly baseUrl = process.env.SUREPASS_BASE_URL || "https://sandbox.surepass.app";
   private readonly bearerToken = process.env.SUREPASS_BEARER_TOKEN;
   private readonly customerId = process.env.SUREPASS_CUSTOMER_ID;
+  private static readonly REQUEST_TIMEOUT_MS = Number(process.env.SUREPASS_TIMEOUT_MS || 20000);
+
+  // Bound every provider call so a slow/hung socket can't pin a BullMQ worker
+  // slot indefinitely. A timeout surfaces as a recoverable error → BullMQ retries.
+  private async timedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+    try {
+      return await fetch(url, { ...init, signal: AbortSignal.timeout(SurepassProvider.REQUEST_TIMEOUT_MS) });
+    } catch (error) {
+      if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+        const timeout = new Error(`Surepass request timed out after ${SurepassProvider.REQUEST_TIMEOUT_MS}ms`) as Error & { code?: string };
+        timeout.code = "PROVIDER_TIMEOUT";
+        throw timeout;
+      }
+      throw error;
+    }
+  }
 
   async verify(type: VerificationType, payload: Record<string, unknown>): Promise<ProviderResponse> {
     if (!this.bearerToken) {
@@ -150,7 +166,7 @@ export class SurepassProvider implements VerificationProvider {
     };
     if (this.customerId) headers["X-Customer-Id"] = this.customerId;
 
-    const response = await fetch(`${this.baseUrl}/api/v1/driving-license/driving-license`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/driving-license/driving-license`, {
       method: "POST",
       headers,
       body: JSON.stringify({ id_number: payload.idNumber, dob: payload.dob })
@@ -168,7 +184,7 @@ export class SurepassProvider implements VerificationProvider {
     const blob = new Blob([bytes], { type: file.mimetype || "application/octet-stream" });
     form.append("file", blob, file.originalname || "gst-certificate");
 
-    const response = await fetch(`${this.baseUrl}/api/v1/ocr/gst`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/ocr/gst`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.bearerToken}` },
       body: form
@@ -196,7 +212,7 @@ export class SurepassProvider implements VerificationProvider {
     form.append("yob", payload.yearOfBirth);
     form.append("full_name", payload.fullName);
 
-    const response = await fetch(`${this.baseUrl}/api/v1/aadhaar/upload/eaadhaar`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/aadhaar/upload/eaadhaar`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.bearerToken}` },
       body: form
@@ -208,7 +224,7 @@ export class SurepassProvider implements VerificationProvider {
   async verifyPanComprehensive(payload: { idNumber: string; maskedAadhaarVariant?: string }): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
 
-    const response = await fetch(`${this.baseUrl}/api/v1/pan/pan-comprehensive`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/pan/pan-comprehensive`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${this.bearerToken}`,
@@ -229,7 +245,7 @@ export class SurepassProvider implements VerificationProvider {
     };
     if (this.customerId) headers["X-Customer-Id"] = this.customerId;
 
-    const response = await fetch(`${this.baseUrl}/api/v1/voter-id/voter-id`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/voter-id/voter-id`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -247,7 +263,7 @@ export class SurepassProvider implements VerificationProvider {
   async verifyRcFull(payload: { idNumber: string }): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
 
-    const response = await fetch(`${this.baseUrl}/api/v1/rc/rc-full`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/rc/rc-full`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${this.bearerToken}`,
@@ -262,7 +278,7 @@ export class SurepassProvider implements VerificationProvider {
   async verifyRcV2(payload: { idNumber: string; enrich?: boolean }): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
 
-    const response = await fetch(`${this.baseUrl}/api/v1/rc/rc-v2`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/rc/rc-v2`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${this.bearerToken}`,
@@ -277,7 +293,7 @@ export class SurepassProvider implements VerificationProvider {
   async matchAddresses(payload: { address1: string; address2: string }): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
 
-    const response = await fetch(`${this.baseUrl}/api/v1/utils/address-matching`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/utils/address-matching`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${this.bearerToken}`,
@@ -297,7 +313,7 @@ export class SurepassProvider implements VerificationProvider {
   }): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
 
-    const response = await fetch(`${this.baseUrl}/api/v1/credit-report-cibil/score`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/credit-report-cibil/score`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${this.bearerToken}`,
@@ -318,7 +334,7 @@ export class SurepassProvider implements VerificationProvider {
   async verifyPassportDetails(payload: { fileNumber: string; dob: string }): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
 
-    const response = await fetch(`${this.baseUrl}/api/v1/passport/passport/passport-details`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/passport/passport/passport-details`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${this.bearerToken}`,
@@ -336,7 +352,7 @@ export class SurepassProvider implements VerificationProvider {
     const bytes = new Uint8Array(payload.buffer.length);
     bytes.set(payload.buffer);
     form.append("file", new Blob([bytes], { type: payload.mimetype || "image/jpeg" }), payload.originalname || "selfie.jpg");
-    const response = await fetch(`${this.baseUrl}/api/v1/face/face-liveness`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/face/face-liveness`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.bearerToken}` },
       body: form
@@ -359,7 +375,7 @@ export class SurepassProvider implements VerificationProvider {
     appendFile("selfie", payload.selfie);
     appendFile("id_card", payload.idCard);
     if (payload.selfie2) appendFile("selfie_2", payload.selfie2);
-    const response = await fetch(`${this.baseUrl}/api/v1/face/face-match`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/face/face-match`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.bearerToken}` },
       body: form
@@ -369,7 +385,7 @@ export class SurepassProvider implements VerificationProvider {
 
   async verifyEmploymentHistory(payload: { uan: string }): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const response = await fetch(`${this.baseUrl}/api/v1/income/employment-history-uan-v2`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/income/employment-history-uan-v2`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
       body: JSON.stringify({ id_number: payload.uan })
@@ -392,7 +408,7 @@ export class SurepassProvider implements VerificationProvider {
       ...(payload.employerName ? { employer_name: payload.employerName } : {}),
       ...(payload.employeeName ? { employee_name: payload.employeeName } : {})
     };
-    const response = await fetch(`${this.baseUrl}/api/v1/employment/current-employment-pan-mobile`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/employment/current-employment-pan-mobile`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
       body: JSON.stringify(body)
@@ -402,7 +418,7 @@ export class SurepassProvider implements VerificationProvider {
 
   async searchEcourts(payload: { name: string; fatherName: string; address: string; year?: string; state?: string }): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const response = await fetch(`${this.baseUrl}/api/v1/ecourts/ecourt-search-v2`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/ecourts/ecourt-search-v2`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
       body: JSON.stringify({ name: payload.name, father_name: payload.fatherName, address: payload.address, year: payload.year || "", state: payload.state || "" })
@@ -412,7 +428,7 @@ export class SurepassProvider implements VerificationProvider {
 
   async getEcourtIndividualDetails(payload: { clientId: string }): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const response = await fetch(`${this.baseUrl}/api/v1/ecourts/ecourt-individual-court-details`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/ecourts/ecourt-individual-court-details`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
       body: JSON.stringify({ client_id: payload.clientId })
@@ -422,7 +438,7 @@ export class SurepassProvider implements VerificationProvider {
 
   async searchEcourtByCnr(payload: { cnrNumber: string; courtType: "district_court" | "high_court" }): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const response = await fetch(`${this.baseUrl}/api/v1/ecourts/ecourt-cnr-search-adv`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/ecourts/ecourt-cnr-search-adv`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
       body: JSON.stringify({ cnr_number: payload.cnrNumber, court_type: payload.courtType })
@@ -432,7 +448,7 @@ export class SurepassProvider implements VerificationProvider {
 
   async initializeAadhaarOvse(payload: AadhaarOvseInitializeData): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const response = await fetch(`${this.baseUrl}/api/v1/aadhaar-v4/initialize`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/aadhaar-v4/initialize`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
       body: JSON.stringify(payload)
@@ -443,7 +459,7 @@ export class SurepassProvider implements VerificationProvider {
   async getAadhaarOvseStatus(clientId: string): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
     const query = new URLSearchParams({ client_id: clientId });
-    const response = await fetch(`${this.baseUrl}/api/v1/aadhaar-v4/status?${query.toString()}`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/aadhaar-v4/status?${query.toString()}`, {
       method: "GET",
       headers: { authorization: `Bearer ${this.bearerToken}` }
     });
@@ -453,7 +469,7 @@ export class SurepassProvider implements VerificationProvider {
   async getAadhaarOvseResult(clientId: string): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
     const query = new URLSearchParams({ client_id: clientId });
-    const response = await fetch(`${this.baseUrl}/api/v1/aadhaar-v4/result?${query.toString()}`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/aadhaar-v4/result?${query.toString()}`, {
       method: "GET",
       headers: { authorization: `Bearer ${this.bearerToken}` }
     });
@@ -462,7 +478,7 @@ export class SurepassProvider implements VerificationProvider {
 
   async initializeDigiLocker(payload: DigiLockerInitializeData): Promise<GstProviderResponse> {
     if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const response = await fetch(`${this.baseUrl}/api/v1/digilocker/initialize`, {
+    const response = await this.timedFetch(`${this.baseUrl}/api/v1/digilocker/initialize`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
       body: JSON.stringify({ data: payload })

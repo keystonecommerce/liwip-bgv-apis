@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { createHash } from "node:crypto";
+import { hashPortalPassword } from "../apps/verification-api/src/modules/portal-auth/password";
 
 const prisma = new PrismaClient();
 
@@ -178,6 +179,107 @@ async function main(): Promise<void> {
       }
     });
   }
+
+  const portalUsers = [
+    {
+      id: "portal_user_demo_company_admin",
+      tenantId: partnerTenant.id,
+      clientId: partnerClient.id,
+      email: process.env.DEV_CORPORATE_ADMIN_EMAIL,
+      password: process.env.DEV_CORPORATE_ADMIN_PASSWORD,
+      displayName: "Demo Partner Admin",
+      role: "CORPORATE_ADMIN"
+    },
+    {
+      id: "portal_user_liwip_support",
+      tenantId: tenant.id,
+      clientId: undefined,
+      email: process.env.DEV_LIWIP_SUPPORT_EMAIL,
+      password: process.env.DEV_LIWIP_SUPPORT_PASSWORD,
+      displayName: "LIWIP Support",
+      role: "LIWIP_SUPPORT"
+    },
+    {
+      id: "portal_user_demo_field_agent",
+      tenantId: partnerTenant.id,
+      clientId: partnerClient.id,
+      email: process.env.DEV_FIELD_AGENT_EMAIL,
+      password: process.env.DEV_FIELD_AGENT_PASSWORD,
+      displayName: "Demo Field Agent",
+      role: "FIELD_AGENT"
+    }
+  ];
+
+  for (const user of portalUsers) {
+    if (!user.email || !user.password) continue;
+    const email = user.email.trim().toLowerCase();
+    const passwordHash = await hashPortalPassword(user.password);
+    await prisma.portalUser.upsert({
+      where: { email },
+      update: {
+        tenantId: user.tenantId,
+        clientId: user.clientId,
+        displayName: user.displayName,
+        passwordHash,
+        role: user.role,
+        status: "ACTIVE"
+      },
+      create: {
+        id: user.id,
+        tenantId: user.tenantId,
+        clientId: user.clientId,
+        email,
+        displayName: user.displayName,
+        passwordHash,
+        role: user.role,
+        status: "ACTIVE"
+      }
+    });
+  }
+
+  // Sample field-verification fixture: a partner-tenant case whose physical-address
+  // check awaits a field visit. It surfaces as an available FieldTask for the seeded
+  // field agent so the field app has real work on first run.
+  const sampleApplicationData = {
+    packageCode: "BASIC_ID",
+    packageVersion: 1,
+    personal: {
+      phone: "9990001234",
+      nameAsAadhaar: "Rahul Kumar",
+      dateOfBirth: "1994-05-20",
+      submittedAddress: "12/3, 4th Cross, Indiranagar, Bengaluru, Karnataka 560038"
+    },
+    consent: {
+      granted: true,
+      purpose: "Gig-worker identity and address verification",
+      textVersion: "worker-verification-v1",
+      grantedAt: new Date().toISOString()
+    }
+  };
+  await prisma.application.upsert({
+    where: { id: "app_seed_field_demo" },
+    update: { status: "MANUAL_REVIEW" },
+    create: {
+      id: "app_seed_field_demo",
+      tenantId: partnerTenant.id,
+      clientId: partnerClient.id,
+      packageId: "package_basic_id_v1",
+      status: "MANUAL_REVIEW",
+      data: sampleApplicationData
+    }
+  });
+  await prisma.verification.upsert({
+    where: { id: "verification_seed_field_demo" },
+    update: { status: "MANUAL_REVIEW" },
+    create: {
+      id: "verification_seed_field_demo",
+      applicationId: "app_seed_field_demo",
+      type: "CURRENT_ADDRESS",
+      status: "MANUAL_REVIEW",
+      provider: "field",
+      attemptCount: 0
+    }
+  });
 }
 
 main()

@@ -1,0 +1,17 @@
+import { Body, Controller, Get, Headers, Inject, Post } from "@nestjs/common";
+import { PortalAuthService } from "./portal-auth.service";
+
+@Controller("v1/portal-auth")
+export class PortalAuthController {
+  constructor(@Inject(PortalAuthService) private readonly auth: PortalAuthService) {}
+
+  @Post("login")
+  login(@Body() body: { email?: string; password?: string; role?: string }) {
+    return this.auth.login(body);
+  }
+
+  @Get("me")
+  me(@Headers("authorization") authorization?: string) {
+    return this.auth.me(authorization);
+  }
+}
