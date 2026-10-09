@@ -1,14 +1,14 @@
 import { BadGatewayException, BadRequestException, Inject, Injectable } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import type { ClientContext } from "../../common/auth/client-context";
-import type { DigiLockerInitializeData, DigiLockerInitializeProviderResponse } from "../../integrations/surepass/digilocker.types";
-import { SurepassProvider } from "../../integrations/surepass/surepass.provider";
+import type { DigiLockerInitializeData, DigiLockerInitializeProviderResponse } from "../../integrations/document-session.types";
+import { VERIFICATION_PROVIDER, VerificationProvider } from "../../integrations/verification-provider";
 
 type DigiLockerInitializeRequest = { data?: Partial<DigiLockerInitializeData> };
 
 @Injectable()
 export class DigiLockerService {
-  constructor(@Inject(SurepassProvider) private readonly provider: SurepassProvider) {}
+  constructor(@Inject(VERIFICATION_PROVIDER) private readonly provider: VerificationProvider) {}
 
   async initialize(request: DigiLockerInitializeRequest, client: ClientContext) {
     const data = this.validateAndNormalise(request?.data || {});

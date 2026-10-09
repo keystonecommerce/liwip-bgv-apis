@@ -1,4 +1,5 @@
-export type VerificationType = "AADHAAR" | "PAN" | "DRIVING_LICENSE" | "VOTER_ID" | "ADDRESS_MATCHING" | "CURRENT_ADDRESS" | "EDUCATION" | "RC_FULL" | "RC_V2" | "CIBIL_SCORE" | "PASSPORT" | "FACE_LIVENESS" | "FACE_MATCH" | "EMPLOYMENT_HISTORY" | "CURRENT_EMPLOYMENT" | "ECOURTS_SEARCH" | "REFERENCE_CHECK" | "SKILL_CERTIFICATION";
+import type { SupplementaryCheckType } from "./supplementary-checks";
+export type VerificationType = SupplementaryCheckType | "AADHAAR" | "PAN" | "DRIVING_LICENSE" | "VOTER_ID" | "ADDRESS_MATCHING" | "CURRENT_ADDRESS" | "EDUCATION" | "RC_FULL" | "RC_V2" | "CIBIL_SCORE" | "PASSPORT" | "FACE_LIVENESS" | "FACE_MATCH" | "EMPLOYMENT_HISTORY" | "CURRENT_EMPLOYMENT" | "ECOURTS_SEARCH" | "REFERENCE_CHECK" | "SKILL_CERTIFICATION";
 export type VerificationStatus = "PENDING" | "QUEUED" | "PROCESSING" | "VERIFIED" | "FAILED" | "MANUAL_REVIEW";
 export type ApplicationStatus = "PENDING_VERIFICATION" | "VERIFICATION_IN_PROGRESS" | "VERIFIED" | "VERIFICATION_FAILED" | "MANUAL_REVIEW";
 export type FinalRecommendation = "PENDING" | "PASS" | "FAIL" | "MANUAL_REVIEW";
@@ -65,6 +66,8 @@ export interface ApplicationSchema {
     textVersion: string;
     grantedAt: string;
   };
+  addressConsent?: boolean;
+  biometricConsent?: boolean;
 }
 
 export interface PackageCheckRule {

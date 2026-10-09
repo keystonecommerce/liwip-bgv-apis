@@ -3,7 +3,7 @@ import { ApiKeyGuard } from "../../common/auth/api-key.guard";
 import { ClientContext, CurrentClient } from "../../common/auth/client-context";
 import { ScopeGuard } from "../../common/auth/scope.guard";
 import { RequireScopes } from "../../common/auth/scopes";
-import type { AadhaarOvseInitializeData } from "../../integrations/surepass/aadhaar-ovse.types";
+import type { AadhaarOvseInitializeData } from "../../integrations/aadhaar-session.types";
 import { AadhaarOvseService } from "./aadhaar-ovse.service";
 
 @Controller("v1/aadhaar/ovse")

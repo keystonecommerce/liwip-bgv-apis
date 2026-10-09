@@ -1,3 +1,5 @@
+The table below describes the original endpoints. For the new modular integration, application-linked checks and current coverage, see [SUREPASS-BGV-INTEGRATION.md](SUREPASS-BGV-INTEGRATION.md) and [SUREPASS-COVERAGE.md](SUREPASS-COVERAGE.md). Account enablement has not been live-verified for this change.
+
 | API name | Endpoint | Status |
 |---|---|---|
 | PAN Comprehensive | `POST /api/v1/pan/pan-comprehensive` | Implemented |

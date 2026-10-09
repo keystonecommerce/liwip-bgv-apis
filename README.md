@@ -2,6 +2,8 @@
 
 Developer-ready prototype for asynchronous gig-worker and vehicle background verification.
 
+The modular Surepass integration adds 20 application-linked verification checks. See [setup and API usage](docs/SUREPASS-BGV-INTEGRATION.md) and the [72-product coverage matrix](docs/SUREPASS-COVERAGE.md) for supported inputs, provider replacement, credentials and deferred products.
+
 ## Implemented architecture
 
 ```text
