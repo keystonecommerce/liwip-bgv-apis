@@ -13,7 +13,7 @@ export const LIMITS = {
   passkeySetupPerWorker: { env: "LIMIT_PASSKEY_SETUP_PER_WORKER_HOUR", limit: 5, window: 3600, message: "Too many quick sign-in attempts. Try again later." },
   checkPerWorkerHour: { env: "LIMIT_CHECKS_PER_WORKER_HOUR", limit: 15, window: 3600, message: "You have submitted many checks this hour. Try again later." },
   checkPerWorkerDay: { env: "LIMIT_CHECKS_PER_WORKER_DAY", limit: 40, window: 86400, message: "You have reached today's limit for checks. Try again tomorrow." },
-  aadhaarPerWorker: { env: "LIMIT_AADHAAR_PER_WORKER_HOUR", limit: 5, window: 3600, message: "Too many Aadhaar attempts. Try again in an hour." },
+  aadhaarPerWorker: { env: "LIMIT_AADHAAR_PER_WORKER_HOUR", limit: 10, window: 3600, message: "Too many Aadhaar attempts. Try again in an hour." },
   caseEditsPerWorker: { env: "LIMIT_CASE_EDITS_PER_WORKER_HOUR", limit: 30, window: 3600, message: "Too many changes. Try again later." }
 } as const;
 
@@ -45,6 +45,12 @@ export class RateLimitService implements OnModuleDestroy {
       throw new ServiceUnavailableException("Service is busy. Try again shortly.");
     }
     if (count > limit) throw new HttpException(rule.message, 429);
+  }
+
+  /** Clears one subject's counters, e.g. when support gives a worker a fresh start. */
+  async clear(names: LimitName[], subject: string): Promise<void> {
+    const digest = createHash("sha256").update(subject).digest("hex").slice(0, 32);
+    await this.redis.del(...names.map((name) => `liwip:limit:${name}:${digest}`)).catch(() => undefined);
   }
 
   async onModuleDestroy() {

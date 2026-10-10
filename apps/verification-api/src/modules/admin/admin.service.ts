@@ -2,12 +2,13 @@ import { BadRequestException, ForbiddenException, Inject, Injectable } from "@ne
 import IORedis from "ioredis";
 import { redisConnectionOptions } from "../../config/redis";
 import { PrismaService } from "../../common/database/prisma.service";
+import { RateLimitService } from "../../common/security/rate-limit.service";
 import { PartnerProvisioning, CreatePartnerInput, IssueKeyInput } from "../../common/security/partner-provisioning";
 export type { CreatePartnerInput, IssueKeyInput } from "../../common/security/partner-provisioning";
 @Injectable()
 export class AdminService {
   private readonly provisioning: PartnerProvisioning;
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) { this.provisioning = new PartnerProvisioning(prisma); }
+  constructor(@Inject(PrismaService) private readonly prisma: PrismaService, @Inject(RateLimitService) private readonly limits: RateLimitService) { this.provisioning = new PartnerProvisioning(prisma); }
   createPartner(input: CreatePartnerInput) { return this.provisioning.createPartner(input); }
   issueKey(clientId: string, input: IssueKeyInput) { return this.provisioning.issueKey(clientId, input); }
   rotateKey(id: string) { return this.provisioning.rotateKey(id); }
@@ -41,6 +42,11 @@ export class AdminService {
     const phone = `91${national}`;
     const scope = input?.clientId ? { clientId: String(input.clientId) } : {};
     const archivedAs = `archived:${Date.now()}:${phone}`;
+    // The worker's own limits (keyed by tenant, client and phone) start fresh too.
+    const owners = await this.prisma.application.findMany({ where: { workerPhone: phone, ...scope }, select: { tenantId: true, clientId: true }, distinct: ["tenantId", "clientId"] });
+    for (const owner of owners) {
+      await this.limits.clear(["aadhaarPerWorker", "checkPerWorkerHour", "checkPerWorkerDay", "passkeySetupPerWorker", "caseEditsPerWorker"], `${owner.tenantId}:${owner.clientId}:${phone}`);
+    }
     return this.prisma.$transaction(async (tx) => {
       const cases = await tx.application.updateMany({ where: { workerPhone: phone, ...scope }, data: { workerPhone: archivedAs, status: "ARCHIVED" } });
       const passkeys = await tx.workerPasskey.deleteMany({ where: { workerPhone: phone, ...scope } });
