@@ -18,6 +18,8 @@ export interface ApplicationSchema {
   personal: {
     phone: string;
     nameAsAadhaar: string;
+    /** Full name the worker typed, as on their PAN (initials expanded). */
+    declaredName?: string;
     alternatePhone?: string;
     email?: string;
     dateOfBirth: string;

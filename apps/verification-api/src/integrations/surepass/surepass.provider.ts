@@ -30,24 +30,19 @@ import { getAadhaarOvseResult } from "./apis/get-aadhaar-ovse-result";
 import { initializeDigiLocker } from "./apis/initialize-digi-locker";
 import { CheckFiles, SupplementaryCheckType, validateCheck } from "../../domain/supplementary-checks";
 import { checkContracts } from "./check-registry";
+import { matchesAnyName } from "../../domain/name-match";
 
 type CheckStatus = NonNullable<ProviderResponse["status"]>;
-
-/** Order- and punctuation-insensitive, so "KUMAR RAVI" matches "Ravi Kumar." */
-function normalizeName(value: unknown): string {
-  if (typeof value !== "string") return "";
-  return value.toUpperCase().replace(/[^A-Z ]/g, " ").split(/\s+/).filter(Boolean).sort().join(" ");
-}
 
 /**
  * A successful lookup only proves the document exists. It passes when the name
  * on record matches the worker; anything else goes to a reviewer.
  */
 function nameStatus(expected: unknown, ...returned: unknown[]): (data: Record<string, unknown>) => CheckStatus {
+  const references = (Array.isArray(expected) ? expected : [expected]).filter((name) => typeof name === "string" && name.trim());
   return (data) => {
-    const want = normalizeName(expected);
-    const got = returned.map((field) => normalizeName(data[field as string])).find(Boolean);
-    return want && got === want ? "verified" : "manual_review";
+    const got = returned.map((field) => data[field as string]).find((value) => typeof value === "string" && value.trim());
+    return got && matchesAnyName(got, references) ? "verified" : "manual_review";
   };
 }
 
@@ -84,7 +79,8 @@ export class SurepassProvider implements VerificationProvider {
     if (type === "VOTER_ID") {
       return this.toVerificationResponse(await this.verifyVoterId({
         idNumber: String(payload.idNumber),
-        fullName: String(payload.fullName),
+        // Surepass takes one name; matching below accepts any reference name.
+        fullName: String(Array.isArray(payload.fullName) ? payload.fullName[0] ?? "" : payload.fullName),
         dob: String(payload.dob)
       }), "Voter ID", false, nameStatus(payload.fullName, "name", "name_on_card"));
     }

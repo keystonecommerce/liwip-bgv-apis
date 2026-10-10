@@ -6,6 +6,7 @@ import IORedis from "ioredis";
 import { SensitiveVerificationInputs, VerificationJob, VerificationType } from "../../domain/verification.types";
 import { VERIFICATION_PROVIDER, VerificationProvider } from "../../integrations/verification-provider";
 import { VerificationStore } from "./verification.repository";
+import { referenceNames } from "../../domain/name-match";
 
 // Stable namespace for the BGV verification queue.
 const queueName = "application-verification";
@@ -29,16 +30,18 @@ function applicationToPayload(
   const personal = data.personal || {};
   const education = data.education || {};
   const vehicle = data.vehicle || {};
+  // Reference names for matching: Aadhaar name, plus the typed PAN name when it fits Aadhaar.
+  const names = referenceNames(personal, data.identity?.status === "VERIFIED" ? data.identity.fullName : undefined);
   if (type === "AADHAAR" && sensitiveInputs?.aadhaarPdf) return sensitiveInputs.aadhaarPdf as unknown as Record<string, unknown>;
   if (type === "AADHAAR") return { name: personal.nameAsAadhaar, dateOfBirth: personal.dateOfBirth, aadhaarReference: personal.aadhaarReference };
-  if (type === "PAN") return { idNumber: personal.panNumber, name: personal.nameAsAadhaar };
-  if (type === "DRIVING_LICENSE") return { licenseNumber: personal.drivingLicenceNumber, name: personal.nameAsAadhaar, dob: personal.drivingLicenceDob || personal.dateOfBirth };
-  if (type === "VOTER_ID") return { idNumber: personal.voterId, fullName: personal.nameAsAadhaar, dob: personal.dateOfBirth };
+  if (type === "PAN") return { idNumber: personal.panNumber, name: names };
+  if (type === "DRIVING_LICENSE") return { licenseNumber: personal.drivingLicenceNumber, name: names, dob: personal.drivingLicenceDob || personal.dateOfBirth };
+  if (type === "VOTER_ID") return { idNumber: personal.voterId, fullName: names, dob: personal.dateOfBirth };
   if (type === "ADDRESS_MATCHING") return { address1: personal.submittedAddress, address2: officialAddress };
   if (type === "RC_FULL") return { idNumber: vehicle.registrationNumber };
-  if (type === "RC_V2") return { idNumber: vehicle.registrationNumber, name: personal.nameAsAadhaar };
+  if (type === "RC_V2") return { idNumber: vehicle.registrationNumber, name: names };
   if (type === "CIBIL_SCORE") return { pan: personal.panNumber, mobile: personal.phone, name: personal.nameAsAadhaar, gender: personal.gender };
-  if (type === "PASSPORT") return { fileNumber: personal.passportFileNumber, dob: personal.dateOfBirth, name: personal.nameAsAadhaar };
+  if (type === "PASSPORT") return { fileNumber: personal.passportFileNumber, dob: personal.dateOfBirth, name: names };
   if (type === "FACE_LIVENESS" && sensitiveInputs?.selfie) return sensitiveInputs.selfie as unknown as Record<string, unknown>;
   if (type === "FACE_MATCH" && sensitiveInputs?.selfie && sensitiveInputs?.idCard) {
     return { selfie: sensitiveInputs.selfie, idCard: sensitiveInputs.idCard } as unknown as Record<string, unknown>;
