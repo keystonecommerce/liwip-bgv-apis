@@ -7,6 +7,7 @@ import { ScopeGuard } from "../../common/auth/scope.guard";
 import { RequireScopes } from "../../common/auth/scopes";
 import { CurrentWorker, WorkerGuard } from "../../common/auth/worker.guard";
 import type { WorkerIdentity } from "../../common/auth/worker-token";
+import { EndUserIp, RateLimitService } from "../../common/security/rate-limit.service";
 import { WorkerPasskeyService } from "./worker-passkey.service";
 
 /** Quick sign-in with a passkey. Setting one up needs a worker who already passed OTP. */
@@ -14,12 +15,16 @@ import { WorkerPasskeyService } from "./worker-passkey.service";
 @UseGuards(ApiKeyGuard, ScopeGuard)
 @RequireScopes("worker:cases")
 export class WorkerPasskeyController {
-  constructor(@Inject(WorkerPasskeyService) private readonly passkeys: WorkerPasskeyService) {}
+  constructor(
+    @Inject(WorkerPasskeyService) private readonly passkeys: WorkerPasskeyService,
+    @Inject(RateLimitService) private readonly limits: RateLimitService
+  ) {}
 
   @Post("register/options")
   @HttpCode(200)
   @UseGuards(WorkerGuard)
-  registrationOptions(@CurrentWorker() worker: WorkerIdentity, @Body() body: { displayName?: string }) {
+  async registrationOptions(@CurrentWorker() worker: WorkerIdentity, @Body() body: { displayName?: string }) {
+    await this.limits.consume("passkeySetupPerWorker", `${worker.tenantId}:${worker.clientId}:${worker.phone}`);
     return this.passkeys.registrationOptions(worker, body?.displayName);
   }
 
@@ -33,14 +38,16 @@ export class WorkerPasskeyController {
   @Post("login/options")
   @HttpCode(200)
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
-  authenticationOptions(@CurrentClient() client: ClientContext) {
+  async authenticationOptions(@CurrentClient() client: ClientContext, @EndUserIp() ip: string) {
+    await this.limits.consume("passkeyLoginPerIp", ip);
     return this.passkeys.authenticationOptions(client);
   }
 
   @Post("login/verify")
   @HttpCode(200)
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
-  verifyAuthentication(@CurrentClient() client: ClientContext, @Body() body: AuthenticationResponseJSON) {
+  async verifyAuthentication(@CurrentClient() client: ClientContext, @Body() body: AuthenticationResponseJSON, @EndUserIp() ip: string) {
+    await this.limits.consume("passkeyLoginPerIp", ip);
     return this.passkeys.verifyAuthentication(client, body);
   }
 }
