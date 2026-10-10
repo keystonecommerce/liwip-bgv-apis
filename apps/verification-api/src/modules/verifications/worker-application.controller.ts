@@ -28,7 +28,8 @@ export class WorkerApplicationController {
     return this.verificationService.createApplication(
       request.data,
       request.sensitiveInputs,
-      { tenantId: client.tenantId, clientId: client.clientId }
+      { tenantId: client.tenantId, clientId: client.clientId, apiKeyId: client.apiKeyId }
     );
   }
 }
+

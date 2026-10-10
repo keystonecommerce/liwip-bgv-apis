@@ -2,10 +2,11 @@ import { BadRequestException, Inject, Injectable, NotFoundException } from "@nes
 import { ApplicationOwner, ApplicationSchema, PackageCheckRule, SensitiveVerificationInputs, VerificationType } from "../../domain/verification.types";
 import { VerificationQueue } from "./verification.queue";
 import { VerificationStore } from "./verification.repository";
+import { isSupplementaryCheck } from "../../domain/supplementary-checks";
 
 function hasValue(value: unknown): boolean { return value !== undefined && value !== null && value !== ""; }
 
-const checkNames: Record<VerificationType, string> = {
+const checkNames: Partial<Record<VerificationType, string>> = {
   AADHAAR: "e-Aadhaar PDF or Aadhaar reference",
   PAN: "PAN number",
   DRIVING_LICENSE: "driving licence number and date of birth",
@@ -74,8 +75,8 @@ export class VerificationService {
       if (verification.type === "ADDRESS_MATCHING") continue;
       await this.queue.addVerificationJob({ verificationId, applicationId: application.id, type: verification.type });
     }
-    if (hasManualCheck) await this.store.recalculateApplicationStatus(application.id);
-    return this.getApplicationDetails(application.id);
+    if (hasManualCheck) await this.store.recalculateApplicationStatus(application.id, owner);
+    return this.getApplicationDetails(application.id, owner);
   }
 
   async getApplicationDetails(id: string, owner?: ApplicationOwner) {
@@ -87,8 +88,13 @@ export class VerificationService {
   async retryVerification(id: string, owner?: ApplicationOwner) {
     const verification = await this.store.getVerification(id, owner);
     if (!verification) throw new NotFoundException(`Verification ${id} not found`);
+    if (isSupplementaryCheck(verification.type)) throw new BadRequestException("Supplementary checks must be resubmitted with a new Idempotency-Key after reviewing the previous outcome");
+    if (verification.status !== "FAILED") throw new BadRequestException("Only failed checks can be retried; pending/reviewed checks require case review");
+    const application = await this.store.getApplication(verification.applicationId, owner);
+    if (!application) throw new NotFoundException("Application not found");
+    if (await this.store.hasDispatchedCall(verification.id, application)) throw new BadRequestException("Previously dispatched provider work requires reconciliation; create a new check for a deliberate recheck");
     await this.queue.addVerificationJob({ verificationId: verification.id, applicationId: verification.applicationId, type: verification.type });
-    return this.getApplicationDetails(verification.applicationId);
+    return this.getApplicationDetails(verification.applicationId, owner);
   }
 
   async reviewVerification(
@@ -119,8 +125,8 @@ export class VerificationService {
       },
       failureCode: decision === "FAILED" ? "MANUAL_REVIEW_REJECTED" : undefined,
       failureReason: decision === "FAILED" ? note : undefined
-    });
-    await this.store.recalculateApplicationStatus(verification.applicationId);
+    }, owner);
+    await this.store.recalculateApplicationStatus(verification.applicationId, owner);
     return this.getApplicationDetails(verification.applicationId, owner);
   }
 
@@ -149,8 +155,8 @@ export class VerificationService {
     const hasAadhaar = hasValue(personal.aadhaarReference) || hasValue(documents.aadhaarFront) || hasValue(documents.aadhaarBack) || hasValue(documents.aadhaarPdf);
 
     if (type === "AADHAAR") return hasAadhaar;
-    if (type === "PAN") return hasValue(personal.panNumber) || hasValue(documents.panCard);
-    if (type === "DRIVING_LICENSE") return (hasValue(personal.drivingLicenceNumber) || hasValue(documents.drivingLicence)) && hasValue(personal.drivingLicenceDob || personal.dateOfBirth);
+    if (type === "PAN") return hasValue(personal.panNumber);
+    if (type === "DRIVING_LICENSE") return hasValue(personal.drivingLicenceNumber) && hasValue(personal.drivingLicenceDob || personal.dateOfBirth);
     if (type === "VOTER_ID") return hasValue(personal.voterId) && hasValue(personal.nameAsAadhaar) && hasValue(personal.dateOfBirth);
     if (type === "ADDRESS_MATCHING") return hasValue(personal.submittedAddress) && hasAadhaar;
     if (type === "CURRENT_ADDRESS") return hasValue(personal.submittedAddress);
@@ -158,8 +164,8 @@ export class VerificationService {
     if (type === "RC_FULL" || type === "RC_V2") return hasValue(data.vehicle?.registrationNumber);
     if (type === "CIBIL_SCORE") return hasValue(personal.panNumber) && hasValue(personal.phone) && hasValue(personal.nameAsAadhaar) && hasValue(personal.gender) && data.creditConsent?.granted === true;
     if (type === "PASSPORT") return hasValue(personal.passportFileNumber) && hasValue(personal.dateOfBirth);
-    if (type === "FACE_LIVENESS") return hasValue(documents.selfie);
-    if (type === "FACE_MATCH") return hasValue(documents.selfie) && hasValue(documents.idCard);
+    if (type === "FACE_LIVENESS") return hasValue(documents.selfie) && data.biometricConsent === true;
+    if (type === "FACE_MATCH") return hasValue(documents.selfie) && hasValue(documents.idCard) && data.biometricConsent === true;
     if (type === "EMPLOYMENT_HISTORY") return hasValue(data.employment?.uan);
     if (type === "CURRENT_EMPLOYMENT") return hasValue(personal.panNumber) || hasValue(personal.phone) || hasValue(data.employment?.uan);
     if (type === "ECOURTS_SEARCH") return hasValue(personal.nameAsAadhaar) && hasValue(data.criminal?.fatherName) && data.criminal?.consent === true && hasValue(personal.submittedAddress);
@@ -168,3 +174,4 @@ export class VerificationService {
     return false;
   }
 }
+

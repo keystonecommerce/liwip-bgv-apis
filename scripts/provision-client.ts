@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { PartnerProvisioning } from "../apps/verification-api/src/common/security/partner-provisioning";
+import { ALL_SCOPES } from "../apps/verification-api/src/common/security/api-key.util";
 
 const prisma = new PrismaClient();
 const args = new Map<string, string>();
@@ -23,34 +24,23 @@ async function main(): Promise<void> {
   const tenantName = required("tenant-name");
   const clientCode = required("client-code").toUpperCase();
   const clientName = required("client-name");
-  const rawApiKey = `gv_${randomBytes(32).toString("base64url")}`;
-  const keyHash = createHash("sha256").update(rawApiKey).digest("hex");
 
-  const tenant = await prisma.tenant.upsert({
-    where: { slug: tenantSlug },
-    update: { name: tenantName, status: "ACTIVE" },
-    create: { id: `tenant_${randomUUID()}`, slug: tenantSlug, name: tenantName, status: "ACTIVE" }
+  const result = await new PartnerProvisioning(prisma).createPartner({
+    tenantSlug, tenantName, clientCode, clientName,
+    keyName: args.get("key-name"),
+    scopes: args.has("scopes") ? args.get("scopes")!.split(",") : undefined,
+    expiresInDays: args.has("expires-in-days") ? Number(args.get("expires-in-days")) : undefined,
   });
-  const client = await prisma.client.upsert({
-    where: { tenantId_code: { tenantId: tenant.id, code: clientCode } },
-    update: { name: clientName, status: "ACTIVE" },
-    create: { id: `client_${randomUUID()}`, tenantId: tenant.id, code: clientCode, name: clientName, status: "ACTIVE" }
-  });
-  await prisma.apiKey.create({
-    data: {
-      id: `api_key_${randomUUID()}`,
-      clientId: client.id,
-      name: args.get("key-name") || "Platform API key",
-      keyPrefix: rawApiKey.slice(0, 10),
-      keyHash,
-      scopes: ["packages:read", "applications:write", "applications:read", "verifications:retry", "digilocker:write", "aadhaar:write", "aadhaar:read", "otp:write", "documents:write", "documents:read"]
-    }
-  });
+  const { tenant, client, rawKey: raw } = result;
+  const { scopes, expiresAt } = result.apiKey;
 
   console.log("Tenant/client provisioned successfully.");
   console.log(`Tenant: ${tenant.slug}`);
   console.log(`Client: ${client.code}`);
-  console.log(`API key (shown once): ${rawApiKey}`);
+  console.log(`Scopes: ${scopes.join(", ")}`);
+  console.log(`Expires: ${expiresAt ? expiresAt.toISOString() : "never"}`);
+  console.log(`API key (shown once): ${raw}`);
+  console.log(`\nValid scopes: ${ALL_SCOPES.join(", ")}`);
 }
 
 main()
@@ -59,3 +49,4 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => prisma.$disconnect());
+

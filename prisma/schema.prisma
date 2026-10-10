@@ -8,6 +8,7 @@ datasource db {
 }
 
 model Application {
+  apiKeyId          String?
   id                String                @id
   tenantId          String
   clientId          String
@@ -19,11 +20,15 @@ model Application {
   updatedAt         DateTime              @updatedAt
   package           VerificationPackage?  @relation(fields: [packageId], references: [id])
   tenant            Tenant                @relation(fields: [tenantId], references: [id])
-  client            Client                @relation(fields: [clientId], references: [id])
+  client            Client                @relation(fields: [clientId, tenantId], references: [id, tenantId], map: "Application_client_owner_fkey")
   verifications     Verification[]
   documents         ApplicationDocument[]
   verificationCard  VerificationCard?
+  fieldTasks        FieldTask[]
+  providerCalls     ProviderCall[]
+  initiatingKey     ApiKey?               @relation(fields: [apiKeyId, clientId], references: [id, clientId], onDelete: NoAction, map: "Application_key_owner_fkey")
 
+  @@unique([id, tenantId, clientId])
   @@index([tenantId, createdAt])
   @@index([clientId, createdAt])
   @@index([packageId])
@@ -43,8 +48,9 @@ model VerificationCard {
   expiresAt     DateTime
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
-  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  application   Application @relation(fields: [applicationId, tenantId, clientId], references: [id, tenantId, clientId], onDelete: Cascade, map: "VerificationCard_application_owner_fkey")
 
+  @@unique([applicationId, tenantId, clientId])
   @@index([tenantId, clientId, issuedAt])
   @@index([status, expiresAt])
 }
@@ -60,6 +66,7 @@ model Tenant {
   applications        Application[]
   aadhaarOvseSessions AadhaarOvseSession[]
   documents           ApplicationDocument[]
+  portalUsers         PortalUser[]
 
   @@index([status])
 }
@@ -77,26 +84,109 @@ model Client {
   applications        Application[]
   aadhaarOvseSessions AadhaarOvseSession[]
   documents           ApplicationDocument[]
+  portalUsers         PortalUser[]
+  providerCalls       ProviderCall[]
 
   @@unique([tenantId, code])
+  @@unique([id, tenantId])
   @@index([tenantId, status])
 }
 
-model ApiKey {
-  id         String    @id
-  clientId   String
-  name       String
-  keyPrefix  String
-  keyHash    String    @unique
-  scopes     Json
-  isActive   Boolean   @default(true)
-  expiresAt  DateTime?
-  lastUsedAt DateTime?
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  client     Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+model PortalUser {
+  id           String      @id
+  tenantId     String?
+  clientId     String?
+  email        String      @unique
+  displayName  String
+  passwordHash String
+  role         String
+  status       String      @default("ACTIVE")
+  lastLoginAt  DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  tenant       Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  client       Client?     @relation(fields: [clientId, tenantId], references: [id, tenantId], onDelete: Cascade, map: "PortalUser_client_owner_fkey")
+  fieldTasks   FieldTask[] @relation("AgentTasks")
 
+  @@index([tenantId, role, status])
+  @@index([clientId, role, status])
+  @@index([role, status])
+}
+
+model ApiKey {
+  id                    String         @id
+  clientId              String
+  name                  String
+  keyPrefix             String
+  keyHash               String         @unique
+  scopes                Json
+  isActive              Boolean        @default(true)
+  expiresAt             DateTime?
+  lastUsedAt            DateTime?
+  revokedAt             DateTime?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+  client                Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  providerCalls         ProviderCall[]
+  initiatedApplications Application[]
+
+  @@unique([id, clientId])
   @@index([clientId, isActive])
+}
+
+// Legacy terminal-outcome projection, retained for historical compatibility.
+// Never used for new API billing: ProviderCall is authoritative.
+model UsageEvent {
+  id             String   @id
+  tenantId       String
+  clientId       String
+  applicationId  String
+  verificationId String   @unique
+  checkType      String
+  result         String // VERIFIED | NEGATIVE | MANUAL_REVIEW | ERROR
+  billable       Boolean
+  provider       String?
+  createdAt      DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([clientId, createdAt])
+  @@index([billable, createdAt])
+  @@index([checkType])
+}
+
+// Append-only trail of partner API activity and key lifecycle events, for
+// security review, compliance and per-partner history. Written best-effort by
+// AuditInterceptor (successful/handled calls) and ApiKeyGuard (rejected auth).
+// Foreign keys are intentionally omitted so a log row survives tenant/client
+// deletion and never blocks a request; ids are plain strings.
+model AuditLog {
+  id           String   @id
+  actorType    String // PARTNER | ADMIN | SYSTEM
+  tenantId     String?
+  tenantSlug   String?
+  clientId     String?
+  clientCode   String?
+  apiKeyId     String?
+  keyPrefix    String?
+  action       String // e.g. applications.create, apiKey.revoke, auth.rejected
+  method       String?
+  path         String?
+  statusCode   Int?
+  resourceType String?
+  resourceId   String?
+  scopeUsed    String?
+  ip           String?
+  userAgent    String?
+  durationMs   Int?
+  outcome      String // SUCCESS | CLIENT_ERROR | SERVER_ERROR | REJECTED
+  message      String?
+  createdAt    DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([clientId, createdAt])
+  @@index([apiKeyId, createdAt])
+  @@index([action, createdAt])
+  @@index([outcome, createdAt])
 }
 
 model VerificationPackage {
@@ -121,23 +211,26 @@ model VerificationPackage {
 }
 
 model Verification {
-  id                String      @id
+  id                String         @id
   applicationId     String
   type              String
   status            String
   provider          String
-  attemptCount      Int         @default(0)
+  attemptCount      Int            @default(0)
   providerRequestId String?
   result            Json?
   failureResponse   Json?
   failureCode       String?
   failureReason     String?
-  createdAt         DateTime    @default(now())
+  createdAt         DateTime       @default(now())
   startedAt         DateTime?
   completedAt       DateTime?
-  updatedAt         DateTime    @updatedAt
-  application       Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  updatedAt         DateTime       @updatedAt
+  application       Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  fieldTask         FieldTask?
+  providerCalls     ProviderCall[]
 
+  @@unique([id, applicationId])
   @@index([applicationId])
   @@index([status])
   @@index([type])
@@ -159,7 +252,7 @@ model AadhaarOvseSession {
   completedAt       DateTime?
   resultRetrievedAt DateTime?
   tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  client            Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client            Client    @relation(fields: [clientId, tenantId], references: [id, tenantId], onDelete: Cascade, map: "AadhaarOvseSession_client_owner_fkey")
 
   @@index([tenantId, createdAt])
   @@index([clientId, createdAt])
@@ -191,10 +284,100 @@ model ApplicationDocument {
   updatedAt         DateTime    @updatedAt
   tenant            Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   client            Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  application       Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  application       Application @relation(fields: [applicationId, tenantId, clientId], references: [id, tenantId, clientId], onDelete: Cascade, map: "ApplicationDocument_application_owner_fkey")
 
   @@unique([bucket, objectKey])
   @@index([tenantId, clientId, createdAt])
   @@index([applicationId, createdAt])
   @@index([status, expiresAt])
+}
+
+// A physical field-verification task assigned to a FIELD_AGENT portal user.
+// It fulfils one MANUAL verification check (e.g. physical address). See PRD section 14.
+model FieldTask {
+  id               String          @id
+  tenantId         String
+  clientId         String
+  applicationId    String
+  verificationId   String          @unique
+  assignedToUserId String?
+  taskType         String          @default("ADDRESS_VERIFICATION")
+  status           String          @default("PENDING_ASSIGNMENT")
+  workerName       String
+  addressText      String
+  instructions     String?
+  dueAt            DateTime?
+  outcome          String?
+  notes            String?
+  rejectionReason  String?
+  arrivedAt        DateTime?
+  arriveLatitude   Float?
+  arriveLongitude  Float?
+  acceptedAt       DateTime?
+  submittedAt      DateTime?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  application      Application     @relation(fields: [applicationId, tenantId, clientId], references: [id, tenantId, clientId], onDelete: Cascade, map: "FieldTask_application_owner_fkey")
+  verification     Verification    @relation(fields: [verificationId, applicationId], references: [id, applicationId], onDelete: Cascade, map: "FieldTask_verification_owner_fkey")
+  assignedTo       PortalUser?     @relation("AgentTasks", fields: [assignedToUserId], references: [id])
+  evidence         FieldEvidence[]
+
+  @@unique([verificationId, applicationId])
+  @@index([assignedToUserId, status])
+  @@index([tenantId, clientId, status])
+  @@index([status, dueAt])
+}
+
+// Photo / signature evidence captured on a field visit, stored privately in S3.
+model FieldEvidence {
+  id                String    @id
+  fieldTaskId       String
+  tenantId          String
+  clientId          String
+  kind              String
+  status            String    @default("PENDING_UPLOAD")
+  bucket            String
+  objectKey         String
+  originalFileName  String
+  contentType       String
+  declaredSizeBytes Int
+  sizeBytes         Int?
+  capturedLatitude  Float?
+  capturedLongitude Float?
+  capturedAt        DateTime?
+  uploadedAt        DateTime?
+  deletedAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  fieldTask         FieldTask @relation(fields: [fieldTaskId], references: [id], onDelete: Cascade)
+
+  @@unique([bucket, objectKey])
+  @@index([fieldTaskId, createdAt])
+}
+
+// Durable provider-call accounting, separate from verification/reviewer outcomes.
+// STARTED is committed before dispatch. Ambiguous results require reconciliation.
+model ProviderCall {
+  id                String        @id
+  tenantId          String
+  clientId          String
+  apiKeyId          String?
+  applicationId     String?
+  verificationId    String?
+  operationKey      String        @unique
+  provider          String
+  operation         String
+  state             String        @default("STARTED")
+  httpStatus        Int?
+  providerRequestId String?
+  startedAt         DateTime      @default(now())
+  completedAt       DateTime?
+  client            Client        @relation(fields: [clientId, tenantId], references: [id, tenantId], onDelete: Restrict, map: "ProviderCall_client_owner_fkey")
+  application       Application?  @relation(fields: [applicationId, tenantId, clientId], references: [id, tenantId, clientId], onDelete: Restrict, map: "ProviderCall_application_owner_fkey")
+  verification      Verification? @relation(fields: [verificationId, applicationId], references: [id, applicationId], onDelete: Restrict, map: "ProviderCall_verification_owner_fkey")
+  apiKey            ApiKey?       @relation(fields: [apiKeyId, clientId], references: [id, clientId], onDelete: Restrict, map: "ProviderCall_key_owner_fkey")
+
+  @@index([tenantId, clientId, startedAt])
+  @@index([verificationId, state])
+  @@index([state, startedAt])
 }
