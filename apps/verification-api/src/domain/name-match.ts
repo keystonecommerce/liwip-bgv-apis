@@ -67,18 +67,53 @@ export function namesMatch(left: unknown, right: unknown): boolean {
 }
 
 /**
- * Names a document may be matched against: the Aadhaar name, plus the name the
- * worker typed when it fits that Aadhaar name. A typed name that does not fit a
- * verified Aadhaar is ignored, so a worker cannot claim someone else's name.
+ * Looser rule, used only when the registry has already confirmed the worker's
+ * date of birth with the document number: the names share at least one full word.
  */
-export function referenceNames(personal: { nameAsAadhaar?: string; declaredName?: string }, aadhaarName?: string): string[] {
-  const names = [personal.nameAsAadhaar].filter((name): name is string => Boolean(name));
-  const declared = personal.declaredName;
-  if (declared && (!aadhaarName || namesMatch(declared, aadhaarName))) names.push(declared);
-  return [...new Set(names)];
+export function namesShareWord(left: unknown, right: unknown): boolean {
+  const b = new Set(nameTokens(right).filter((token) => token.length > 1));
+  return nameTokens(left).some((token) => token.length > 1 && b.has(token));
 }
 
-/** True when the returned name matches any of the worker's reference names. */
-export function matchesAnyName(returned: unknown, references: unknown[]): boolean {
-  return references.some((reference) => namesMatch(returned, reference));
+/** True when the returned name matches any reference name (loosely when the date of birth is confirmed). */
+export function matchesAnyName(returned: unknown, references: unknown[], options: { loose?: boolean } = {}): boolean {
+  return references.some((reference) => namesMatch(returned, reference) || (options.loose === true && namesShareWord(returned, reference)));
+}
+
+/**
+ * The official names and date of birth every other document is matched against.
+ * Only registry records count: the verified Aadhaar, and a verified PAN whose
+ * name fits that Aadhaar (or the PAN alone when Aadhaar was not chosen). Names
+ * the worker typed are never references for other documents.
+ */
+export interface NameAnchors {
+  names: string[];
+  dateOfBirth?: string;
+  /** False when no registry record is verified yet; name matches then go to review. */
+  official: boolean;
+}
+
+export function nameAnchors(input: {
+  aadhaar?: { name?: string; dateOfBirth?: string } | null;
+  pan?: { name?: string; dateOfBirth?: string } | null;
+}): NameAnchors {
+  const aadhaarName = input.aadhaar?.name?.trim();
+  const panName = input.pan?.name?.trim();
+  const names: string[] = [];
+  if (aadhaarName) names.push(aadhaarName);
+  if (panName && (!aadhaarName || namesMatch(panName, aadhaarName))) names.push(panName);
+  const dateOfBirth = aadhaarName ? input.aadhaar?.dateOfBirth : panName ? input.pan?.dateOfBirth : undefined;
+  return { names: [...new Set(names)], dateOfBirth: dateOfBirth || undefined, official: names.length > 0 };
+}
+
+/**
+ * Names the PAN itself is matched against: the Aadhaar name, plus the full name
+ * the worker typed as on PAN when it fits that Aadhaar (it expands initials).
+ * Without a verified Aadhaar there is nothing official to match, so none.
+ */
+export function panReferenceNames(aadhaarName: string | undefined, declaredName: string | undefined): string[] {
+  if (!aadhaarName) return [];
+  const names = [aadhaarName];
+  if (declaredName && namesMatch(declaredName, aadhaarName)) names.push(declaredName);
+  return [...new Set(names)];
 }

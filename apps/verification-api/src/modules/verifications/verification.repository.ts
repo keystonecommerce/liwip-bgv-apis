@@ -27,6 +27,7 @@ type StoredApplication = {
   clientId: string;
   packageId: string | null;
   status: string;
+  workerPhone?: string | null;
   data: unknown;
   createdAt: Date;
   updatedAt: Date;
@@ -80,9 +81,14 @@ type StoredVerification = {
   updatedAt: Date;
 };
 
-const UNFINISHED = new Set(["PENDING", "QUEUED", "PROCESSING", "MANUAL_REVIEW"]);
+// Waiting on the worker or still running. A check in review does not hold the card back.
+const UNFINISHED = new Set(["PENDING", "QUEUED", "PROCESSING"]);
 
-/** True once a worker's chosen checks have all finished, Aadhaar passed (if chosen) and one check passed. */
+/**
+ * True once every chosen check has been attempted (passed, failed or in review), Aadhaar
+ * passed (if chosen) and at least one check passed. Checks in review join the card when
+ * a reviewer approves them; until then the card shows as updating.
+ */
 export function workerCardReady(checks: Array<{ status: string; type: string }>): boolean {
   if (!checks.length || checks.some((check) => UNFINISHED.has(check.status))) return false;
   const aadhaar = checks.find((check) => check.type === "AADHAAR");
@@ -406,6 +412,7 @@ export class VerificationStore {
       recommendation: this.recommendationFor(record.status as ApplicationStatus),
       card: record.verificationCard ? this.mapCard(record.verificationCard) : undefined,
       data: record.data as unknown as ApplicationSchema,
+      workerCase: Boolean(record.workerPhone),
       verificationIds: record.verifications?.map((verification) => verification.id) || [],
       createdAt: record.createdAt.toISOString(),
       updatedAt: record.updatedAt.toISOString()

@@ -30,19 +30,37 @@ import { getAadhaarOvseResult } from "./apis/get-aadhaar-ovse-result";
 import { initializeDigiLocker } from "./apis/initialize-digi-locker";
 import { CheckFiles, SupplementaryCheckType, validateCheck } from "../../domain/supplementary-checks";
 import { checkContracts } from "./check-registry";
+import { isoDate } from "../../domain/dates";
 import { matchesAnyName } from "../../domain/name-match";
 
 type CheckStatus = NonNullable<ProviderResponse["status"]>;
 
 /**
- * A successful lookup only proves the document exists. It passes when the name
- * on record matches the worker; anything else goes to a reviewer.
+ * A successful lookup only proves the document exists. It passes when the name on
+ * record matches one of the worker's official names; anything else goes to a reviewer.
+ * - `official: false` (no verified Aadhaar or PAN yet): always review.
+ * - `dobConfirmed`: the registry found the record with the official date of birth, so
+ *   sharing one full word with an official name is enough.
+ * - `dobField`: the registry returns a date of birth; it must equal `anchorDob`, and when
+ *   it does the looser name rule applies.
  */
-function nameStatus(expected: unknown, ...returned: unknown[]): (data: Record<string, unknown>) => CheckStatus {
+function nameStatus(payload: Record<string, unknown>, returned: string[], options: { dobField?: string; strict?: boolean } = {}): (data: Record<string, unknown>) => CheckStatus {
+  const expected = payload.name;
   const references = (Array.isArray(expected) ? expected : [expected]).filter((name) => typeof name === "string" && name.trim());
   return (data) => {
-    const got = returned.map((field) => data[field as string]).find((value) => typeof value === "string" && value.trim());
-    return got && matchesAnyName(got, references) ? "verified" : "manual_review";
+    if (payload.official === false || !references.length) return "manual_review";
+    const got = returned.map((field) => data[field]).find((value) => typeof value === "string" && value.trim());
+    if (!got) return "manual_review";
+    let dobConfirmed = payload.dobConfirmed === true;
+    if (options.dobField) {
+      const onRecord = isoDate(data[options.dobField]);
+      const anchor = isoDate(payload.anchorDob);
+      if (onRecord && anchor) {
+        if (onRecord !== anchor) return "manual_review";
+        dobConfirmed = true;
+      }
+    }
+    return matchesAnyName(got, references, { loose: dobConfirmed && !options.strict }) ? "verified" : "manual_review";
   };
 }
 
@@ -70,11 +88,11 @@ export class SurepassProvider implements VerificationProvider {
     }
     if (type === "PAN") {
       return this.toVerificationResponse(await this.verifyPanComprehensive({ idNumber: String(payload.idNumber) }), "PAN", false,
-        nameStatus(payload.name, "full_name", "name"));
+        nameStatus(payload, ["full_name", "name"], { dobField: "dob" }));
     }
     if (type === "DRIVING_LICENSE") {
       return this.toVerificationResponse(await this.verifyDrivingLicense({ idNumber: String(payload.licenseNumber), dob: String(payload.dob) }), "Driving Licence", false,
-        (data) => isPastDate(data.doe) ? "manual_review" : nameStatus(payload.name, "name")(data));
+        (data) => isPastDate(data.doe) ? "manual_review" : nameStatus(payload, ["name"])(data));
     }
     if (type === "VOTER_ID") {
       return this.toVerificationResponse(await this.verifyVoterId({
@@ -82,7 +100,7 @@ export class SurepassProvider implements VerificationProvider {
         // Surepass takes one name; matching below accepts any reference name.
         fullName: String(Array.isArray(payload.fullName) ? payload.fullName[0] ?? "" : payload.fullName),
         dob: String(payload.dob)
-      }), "Voter ID", false, nameStatus(payload.fullName, "name", "name_on_card"));
+      }), "Voter ID", false, nameStatus({ ...payload, name: payload.fullName }, ["name", "name_on_card"]));
     }
     if (type === "ADDRESS_MATCHING") {
       return this.toVerificationResponse(await this.matchAddresses({ address1: String(payload.address1), address2: String(payload.address2) }), "Address Matching", true);
@@ -93,7 +111,7 @@ export class SurepassProvider implements VerificationProvider {
     if (type === "RC_V2") {
       return this.toVerificationResponse(await this.verifyRcV2({ idNumber: String(payload.idNumber), enrich: false }), "RC V2", false,
         // The owner is often a fleet or family member, so a different name goes to review, not failed.
-        nameStatus(payload.name, "owner_name"));
+        nameStatus(payload, ["owner_name"], { strict: true }));
     }
     if (type === "CIBIL_SCORE") {
       return this.toVerificationResponse(await this.verifyCibilScore({
@@ -105,7 +123,7 @@ export class SurepassProvider implements VerificationProvider {
     }
     if (type === "PASSPORT") {
       return this.toVerificationResponse(await this.verifyPassportDetails({ fileNumber: String(payload.fileNumber), dob: String(payload.dob) }), "Passport", false,
-        nameStatus(payload.name, "full_name", "name"));
+        nameStatus(payload, ["full_name", "name"]));
     }
     if (type === "FACE_LIVENESS") {
       return this.toVerificationResponse(await this.verifyFaceLiveness(payload as any), "Face Liveness", false, (data) => data.live === true ? "verified" : "failed");

@@ -146,6 +146,8 @@ export interface ApplicationRecord {
   recommendation: FinalRecommendation;
   card?: VerificationCardRecord;
   data: ApplicationSchema;
+  /** Opened by the worker themselves (worker app), not submitted by a partner. */
+  workerCase?: boolean;
   verificationIds: string[];
   createdAt: string;
   updatedAt: string;

@@ -71,7 +71,7 @@ export class WorkerCaseService {
     const name = personName(fullName, "Enter your full name as on your PAN card");
     const aadhaarVerified = application.data.identity?.status === "VERIFIED";
     // Kept as typed. Until Aadhaar is verified it is also the name checks are matched to;
-    // after that it only counts where it fits the Aadhaar name (see referenceNames).
+    // after that it is only a hint for the PAN check, where it must fit the Aadhaar name (see panReferenceNames).
     const updated = await this.store.updateApplicationData(application.id, owner, (data) => ({
       ...data, personal: { ...data.personal, declaredName: name, ...(aadhaarVerified ? {} : { nameAsAadhaar: name }) }
     }));
