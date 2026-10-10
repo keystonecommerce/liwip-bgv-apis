@@ -33,6 +33,18 @@ export class AdminController {
     });
   }
 
+  // Support: one worker's checks, states and the names providers returned.
+  @Get("worker-cases/:phone")
+  inspectWorker(@Param("phone") phone: string) {
+    return this.admin.inspectWorker(phone);
+  }
+
+  // Support: reopen checks so the worker can submit them again (other progress is kept).
+  @Post("worker-cases/reopen")
+  reopenChecks(@Body() body: { phone?: string; types?: string[] }) {
+    return this.admin.reopenChecks(body);
+  }
+
   // Fresh start for one worker: archives their cases and removes their passkeys.
   @Post("worker-cases/reset")
   resetWorker(@Body() body: { phone?: string; clientId?: string }) {
