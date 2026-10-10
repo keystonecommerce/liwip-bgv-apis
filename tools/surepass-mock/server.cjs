@@ -35,7 +35,10 @@ function createSurepassMock({ token = 'mock_surepass_token', port = 0, timeoutMs
       body.data.result = scenario === 'manual' ? [{ finding: 'Mock finding requiring QA' }] : [];
       if (url.pathname.endsWith('/digilocker/initialize')) Object.assign(body.data, { token: 'mock_session_token', url: 'https://example.test/mock-session', expiry_seconds: 600 });
       if (url.pathname.endsWith('/aadhaar-v4/initialize')) {
-        Object.assign(body.data, { url: 'https://example.test/mock-aadhaar', web_link: 'https://example.test/mock-aadhaar', status: 'pending', expiry_seconds: 600 }); sessions.set(body.data.client_id, true);
+        // The real page sends the worker back to redirect_url after OTP; the mock does it at once.
+        let redirect = 'https://example.test/mock-aadhaar';
+        try { redirect = JSON.parse(Buffer.concat(chunks).toString() || '{}').redirect_url || redirect; } catch {}
+        Object.assign(body.data, { url: redirect, web_link: redirect, status: 'pending', expiry_seconds: 600 }); sessions.set(body.data.client_id, true);
       }
       if (url.pathname.endsWith('/aadhaar-v4/status') || url.pathname.endsWith('/aadhaar-v4/result')) {
         const clientId = url.searchParams.get('client_id');
