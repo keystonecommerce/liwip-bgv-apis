@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { ALL_SCOPES, generateApiKey, normalizeScopes } from "../apps/verification-api/src/common/security/api-key.util";
 
 const prisma = new PrismaClient();
 const args = new Map<string, string>();
@@ -23,8 +24,21 @@ async function main(): Promise<void> {
   const tenantName = required("tenant-name");
   const clientCode = required("client-code").toUpperCase();
   const clientName = required("client-name");
-  const rawApiKey = `gv_${randomBytes(32).toString("base64url")}`;
-  const keyHash = createHash("sha256").update(rawApiKey).digest("hex");
+
+  // --scopes "applications:write,applications:read"  (defaults to all scopes)
+  const scopesArg = args.get("scopes");
+  const scopes = normalizeScopes(scopesArg ? scopesArg.split(",") : undefined);
+
+  // --expires-in-days 90  (optional; key never expires if omitted)
+  const daysArg = args.get("expires-in-days");
+  let expiresAt: Date | null = null;
+  if (daysArg) {
+    const days = Number(daysArg);
+    if (!Number.isFinite(days) || days <= 0) throw new Error("--expires-in-days must be a positive number");
+    expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  }
+
+  const { raw, keyHash, keyPrefix } = generateApiKey();
 
   const tenant = await prisma.tenant.upsert({
     where: { slug: tenantSlug },
@@ -36,21 +50,43 @@ async function main(): Promise<void> {
     update: { name: clientName, status: "ACTIVE" },
     create: { id: `client_${randomUUID()}`, tenantId: tenant.id, code: clientCode, name: clientName, status: "ACTIVE" }
   });
-  await prisma.apiKey.create({
+  const apiKey = await prisma.apiKey.create({
     data: {
       id: `api_key_${randomUUID()}`,
       clientId: client.id,
       name: args.get("key-name") || "Platform API key",
-      keyPrefix: rawApiKey.slice(0, 10),
+      keyPrefix,
       keyHash,
-      scopes: ["packages:read", "applications:write", "applications:read", "verifications:retry", "verifications:write", "digilocker:write", "aadhaar:write", "aadhaar:read", "otp:write", "documents:write", "documents:read"]
+      scopes,
+      expiresAt
+    }
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      id: `audit_${randomUUID()}`,
+      actorType: "ADMIN",
+      action: "partner.create",
+      outcome: "SUCCESS",
+      tenantId: tenant.id,
+      tenantSlug: tenant.slug,
+      clientId: client.id,
+      clientCode: client.code,
+      apiKeyId: apiKey.id,
+      keyPrefix,
+      resourceType: "ApiKey",
+      resourceId: apiKey.id,
+      message: `Provisioned via CLI with scopes: ${scopes.join(", ")}`
     }
   });
 
   console.log("Tenant/client provisioned successfully.");
   console.log(`Tenant: ${tenant.slug}`);
   console.log(`Client: ${client.code}`);
-  console.log(`API key (shown once): ${rawApiKey}`);
+  console.log(`Scopes: ${scopes.join(", ")}`);
+  console.log(`Expires: ${expiresAt ? expiresAt.toISOString() : "never"}`);
+  console.log(`API key (shown once): ${raw}`);
+  console.log(`\nValid scopes: ${ALL_SCOPES.join(", ")}`);
 }
 
 main()

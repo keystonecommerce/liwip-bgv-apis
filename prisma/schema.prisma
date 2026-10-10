@@ -23,6 +23,7 @@ model Application {
   verifications     Verification[]
   documents         ApplicationDocument[]
   verificationCard  VerificationCard?
+  fieldTasks        FieldTask[]
 
   @@index([tenantId, createdAt])
   @@index([clientId, createdAt])
@@ -60,6 +61,7 @@ model Tenant {
   applications        Application[]
   aadhaarOvseSessions AadhaarOvseSession[]
   documents           ApplicationDocument[]
+  portalUsers         PortalUser[]
 
   @@index([status])
 }
@@ -77,9 +79,31 @@ model Client {
   applications        Application[]
   aadhaarOvseSessions AadhaarOvseSession[]
   documents           ApplicationDocument[]
+  portalUsers         PortalUser[]
 
   @@unique([tenantId, code])
   @@index([tenantId, status])
+}
+
+model PortalUser {
+  id           String    @id
+  tenantId     String?
+  clientId     String?
+  email        String    @unique
+  displayName  String
+  passwordHash String
+  role         String
+  status       String    @default("ACTIVE")
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  tenant       Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  client       Client?   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  fieldTasks   FieldTask[] @relation("AgentTasks")
+
+  @@index([tenantId, role, status])
+  @@index([clientId, role, status])
+  @@index([role, status])
 }
 
 model ApiKey {
@@ -92,11 +116,70 @@ model ApiKey {
   isActive   Boolean   @default(true)
   expiresAt  DateTime?
   lastUsedAt DateTime?
+  revokedAt  DateTime?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
   client     Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
   @@index([clientId, isActive])
+}
+
+// Append-only billing/metering ledger: one row per verification that reached a
+// terminal state. `billable` is true when the provider actually did the work
+// (VERIFIED / NEGATIVE / MANUAL_REVIEW) and false for provider/system errors, so
+// partner billing = count of billable rows. Written by the usage-metering
+// BullMQ worker; unique on verificationId makes it idempotent under retries.
+model UsageEvent {
+  id             String   @id
+  tenantId       String
+  clientId       String
+  applicationId  String
+  verificationId String   @unique
+  checkType      String
+  result         String   // VERIFIED | NEGATIVE | MANUAL_REVIEW | ERROR
+  billable       Boolean
+  provider       String?
+  createdAt      DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([clientId, createdAt])
+  @@index([billable, createdAt])
+  @@index([checkType])
+}
+
+// Append-only trail of partner API activity and key lifecycle events, for
+// security review, compliance and per-partner history. Written best-effort by
+// AuditInterceptor (successful/handled calls) and ApiKeyGuard (rejected auth).
+// Foreign keys are intentionally omitted so a log row survives tenant/client
+// deletion and never blocks a request; ids are plain strings.
+model AuditLog {
+  id           String   @id
+  actorType    String   // PARTNER | ADMIN | SYSTEM
+  tenantId     String?
+  tenantSlug   String?
+  clientId     String?
+  clientCode   String?
+  apiKeyId     String?
+  keyPrefix    String?
+  action       String   // e.g. applications.create, apiKey.revoke, auth.rejected
+  method       String?
+  path         String?
+  statusCode   Int?
+  resourceType String?
+  resourceId   String?
+  scopeUsed    String?
+  ip           String?
+  userAgent    String?
+  durationMs   Int?
+  outcome      String   // SUCCESS | CLIENT_ERROR | SERVER_ERROR | REJECTED
+  message      String?
+  createdAt    DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([clientId, createdAt])
+  @@index([apiKeyId, createdAt])
+  @@index([action, createdAt])
+  @@index([outcome, createdAt])
 }
 
 model VerificationPackage {
@@ -137,6 +220,7 @@ model Verification {
   completedAt       DateTime?
   updatedAt         DateTime    @updatedAt
   application       Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  fieldTask         FieldTask?
 
   @@index([applicationId])
   @@index([status])
@@ -197,4 +281,66 @@ model ApplicationDocument {
   @@index([tenantId, clientId, createdAt])
   @@index([applicationId, createdAt])
   @@index([status, expiresAt])
+}
+
+// A physical field-verification task assigned to a FIELD_AGENT portal user.
+// It fulfils one MANUAL verification check (e.g. physical address). See PRD section 14.
+model FieldTask {
+  id               String          @id
+  tenantId         String
+  clientId         String
+  applicationId    String
+  verificationId   String          @unique
+  assignedToUserId String?
+  taskType         String          @default("ADDRESS_VERIFICATION")
+  status           String          @default("PENDING_ASSIGNMENT")
+  workerName       String
+  addressText      String
+  instructions     String?
+  dueAt            DateTime?
+  outcome          String?
+  notes            String?
+  rejectionReason  String?
+  arrivedAt        DateTime?
+  arriveLatitude   Float?
+  arriveLongitude  Float?
+  acceptedAt       DateTime?
+  submittedAt      DateTime?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  application      Application     @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  verification     Verification    @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+  assignedTo       PortalUser?     @relation("AgentTasks", fields: [assignedToUserId], references: [id])
+  evidence         FieldEvidence[]
+
+  @@index([assignedToUserId, status])
+  @@index([tenantId, clientId, status])
+  @@index([status, dueAt])
+}
+
+// Photo / signature evidence captured on a field visit, stored privately in S3.
+model FieldEvidence {
+  id                String    @id
+  fieldTaskId       String
+  tenantId          String
+  clientId          String
+  kind              String
+  status            String    @default("PENDING_UPLOAD")
+  bucket            String
+  objectKey         String
+  originalFileName  String
+  contentType       String
+  declaredSizeBytes Int
+  sizeBytes         Int?
+  capturedLatitude  Float?
+  capturedLongitude Float?
+  capturedAt        DateTime?
+  uploadedAt        DateTime?
+  deletedAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  fieldTask         FieldTask @relation(fields: [fieldTaskId], references: [id], onDelete: Cascade)
+
+  @@unique([bucket, objectKey])
+  @@index([fieldTaskId, createdAt])
 }

@@ -3,6 +3,7 @@ import { Job, Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import { SensitiveVerificationInputs, VerificationJob, VerificationType } from "../../domain/verification.types";
 import { VERIFICATION_PROVIDER, VerificationProvider } from "../../integrations/verification-provider";
+import { UsageQueue, UsageResult } from "../usage/usage.queue";
 import { VerificationStore } from "./verification.repository";
 
 const connectionOptions = {
@@ -78,8 +79,42 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     @Inject(VerificationStore) private readonly store: VerificationStore,
-    @Inject(VERIFICATION_PROVIDER) private readonly provider: VerificationProvider
+    @Inject(VERIFICATION_PROVIDER) private readonly provider: VerificationProvider,
+    @Inject(UsageQueue) private readonly usage: UsageQueue
   ) {}
+
+  // Emit one billing/metering event for a terminal verification. Best-effort:
+  // billing must never break verification processing.
+  private async meter(
+    applicationId: string,
+    verificationId: string,
+    checkType: string,
+    result: UsageResult,
+    billable: boolean,
+    provider?: string | null
+  ): Promise<void> {
+    const application = await this.store.getApplication(applicationId).catch(() => null);
+    if (!application) return;
+    await this.usage.record({
+      tenantId: application.tenantId,
+      clientId: application.clientId,
+      applicationId,
+      verificationId,
+      checkType,
+      result,
+      billable,
+      provider: provider ?? null,
+    });
+  }
+
+  // Purge the in-memory raw PII buffers (Aadhaar PDF, selfie, ID card) once no
+  // check for the application is still pending, so sensitive data isn't retained
+  // in the process heap (and the map can't grow unbounded).
+  private async purgeSensitiveInputsIfDone(applicationId: string): Promise<void> {
+    const verifications = await this.store.getVerificationsForApplication(applicationId).catch(() => []);
+    const stillPending = verifications.some((v) => ["PENDING", "QUEUED", "PROCESSING"].includes(v.status));
+    if (!stillPending) this.store.clearSensitiveInputs(applicationId);
+  }
 
   async onModuleInit(): Promise<void> {
     this.worker = new Worker<VerificationJob>(queueName, async (job) => this.process(job), {
@@ -96,6 +131,11 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
   }
 
   async addVerificationJob(job: VerificationJob): Promise<void> {
+    // A completed/failed job is retained (removeOnComplete/Fail: 100), and
+    // BullMQ treats add() with an existing jobId as a no-op — so a retry would
+    // silently do nothing. Drop any prior job for this verification first.
+    // (No-op on first enqueue; ignored if the job is currently active.)
+    await this.queue.remove(`verification-${job.verificationId}`).catch(() => undefined);
     await this.queue.add(`verify.${job.type.toLowerCase()}`, job, {
       jobId: `verification-${job.verificationId}`,
       attempts: 5,
@@ -124,11 +164,16 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
 
     if (response.status === "verified") {
       await this.store.setResult(verification.id, "VERIFIED", { providerRequestId: response.requestId, result: response.data || {} });
+      // Provider did the work and it passed → billable.
+      await this.meter(application.id, verification.id, verification.type, "VERIFIED", true, verification.provider);
       if (verification.type === "AADHAAR") await this.queueAddressMatch(application.id);
     } else if (response.status === "manual_review") {
       await this.store.setResult(verification.id, "MANUAL_REVIEW", { providerRequestId: response.requestId, result: response.data || {} });
+      // Provider did the work; needs a human → still billable.
+      await this.meter(application.id, verification.id, verification.type, "MANUAL_REVIEW", true, verification.provider);
     } else if (response.status === "pending") {
       await this.store.updateVerification(verification.id, { status: "PENDING", providerRequestId: response.requestId, result: response.data || undefined });
+      // Not terminal yet → no metering.
     } else {
       await this.store.setResult(verification.id, "FAILED", {
         providerRequestId: response.requestId,
@@ -136,8 +181,12 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
         failureCode: "VERIFICATION_FAILED",
         failureReason: "Provider returned a failed verification result"
       });
+      // Provider responded with a negative result (e.g. record not found / no
+      // match). The lookup still happened → billable.
+      await this.meter(application.id, verification.id, verification.type, "NEGATIVE", true, verification.provider);
     }
     await this.store.recalculateApplicationStatus(application.id);
+    await this.purgeSensitiveInputsIfDone(application.id);
   }
 
   private async queueAddressMatch(applicationId: string): Promise<void> {
@@ -165,7 +214,11 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
       failureResponse: providerError.providerResponse,
       attemptCount: job.attemptsMade
     });
+    // Provider/system error (timeout, outage, bad input) — the lookup never
+    // completed, so this is NOT billable.
+    await this.meter(job.data.applicationId, job.data.verificationId, verification.type, "ERROR", false, verification.provider);
     await this.store.recalculateApplicationStatus(job.data.applicationId);
+    await this.purgeSensitiveInputsIfDone(job.data.applicationId);
   }
 
   async onModuleDestroy(): Promise<void> {

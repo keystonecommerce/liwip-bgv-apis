@@ -1,5 +1,6 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { ApplicationOwner, ApplicationSchema, PackageCheckRule, SensitiveVerificationInputs, VerificationType } from "../../domain/verification.types";
+import { UsageQueue } from "../usage/usage.queue";
 import { VerificationQueue } from "./verification.queue";
 import { VerificationStore } from "./verification.repository";
 import { isSupplementaryCheck } from "../../domain/supplementary-checks";
@@ -31,7 +32,8 @@ const checkNames: Partial<Record<VerificationType, string>> = {
 export class VerificationService {
   constructor(
     @Inject(VerificationStore) private readonly store: VerificationStore,
-    @Inject(VerificationQueue) private readonly queue: VerificationQueue
+    @Inject(VerificationQueue) private readonly queue: VerificationQueue,
+    @Inject(UsageQueue) private readonly usage: UsageQueue
   ) {}
 
   async createApplication(data: ApplicationSchema, sensitiveInputs?: SensitiveVerificationInputs, requestedOwner?: ApplicationOwner) {
@@ -123,6 +125,22 @@ export class VerificationService {
       failureReason: decision === "FAILED" ? note : undefined
     });
     await this.store.recalculateApplicationStatus(verification.applicationId);
+    // Meter the human-reviewed outcome. A manual/field review is real work →
+    // billable. Idempotent per verificationId, so if the provider already
+    // metered a MANUAL_REVIEW this just updates the row to the final result.
+    const application = await this.store.getApplication(verification.applicationId, owner);
+    if (application) {
+      await this.usage.record({
+        tenantId: application.tenantId,
+        clientId: application.clientId,
+        applicationId: verification.applicationId,
+        verificationId: verification.id,
+        checkType: verification.type,
+        result: decision === "VERIFIED" ? "VERIFIED" : "NEGATIVE",
+        billable: true,
+        provider: verification.provider ?? null,
+      });
+    }
     return this.getApplicationDetails(verification.applicationId, owner);
   }
 
