@@ -6,6 +6,7 @@ import IORedis from "ioredis";
 import { SensitiveVerificationInputs, VerificationJob, VerificationType } from "../../domain/verification.types";
 import { VERIFICATION_PROVIDER, VerificationProvider } from "../../integrations/verification-provider";
 import { VerificationStore } from "./verification.repository";
+import { referenceNames } from "../../domain/name-match";
 
 // Stable namespace for the BGV verification queue.
 const queueName = "application-verification";
@@ -29,16 +30,18 @@ function applicationToPayload(
   const personal = data.personal || {};
   const education = data.education || {};
   const vehicle = data.vehicle || {};
+  // Reference names for matching: Aadhaar name, plus the typed PAN name when it fits Aadhaar.
+  const names = referenceNames(personal, data.identity?.status === "VERIFIED" ? data.identity.fullName : undefined);
   if (type === "AADHAAR" && sensitiveInputs?.aadhaarPdf) return sensitiveInputs.aadhaarPdf as unknown as Record<string, unknown>;
   if (type === "AADHAAR") return { name: personal.nameAsAadhaar, dateOfBirth: personal.dateOfBirth, aadhaarReference: personal.aadhaarReference };
-  if (type === "PAN") return { idNumber: personal.panNumber, name: personal.nameAsAadhaar };
-  if (type === "DRIVING_LICENSE") return { licenseNumber: personal.drivingLicenceNumber, name: personal.nameAsAadhaar, dob: personal.drivingLicenceDob || personal.dateOfBirth };
-  if (type === "VOTER_ID") return { idNumber: personal.voterId, fullName: personal.nameAsAadhaar, dob: personal.dateOfBirth };
+  if (type === "PAN") return { idNumber: personal.panNumber, name: names };
+  if (type === "DRIVING_LICENSE") return { licenseNumber: personal.drivingLicenceNumber, name: names, dob: personal.drivingLicenceDob || personal.dateOfBirth };
+  if (type === "VOTER_ID") return { idNumber: personal.voterId, fullName: names, dob: personal.dateOfBirth };
   if (type === "ADDRESS_MATCHING") return { address1: personal.submittedAddress, address2: officialAddress };
   if (type === "RC_FULL") return { idNumber: vehicle.registrationNumber };
-  if (type === "RC_V2") return { idNumber: vehicle.registrationNumber, name: personal.nameAsAadhaar };
+  if (type === "RC_V2") return { idNumber: vehicle.registrationNumber, name: names };
   if (type === "CIBIL_SCORE") return { pan: personal.panNumber, mobile: personal.phone, name: personal.nameAsAadhaar, gender: personal.gender };
-  if (type === "PASSPORT") return { fileNumber: personal.passportFileNumber, dob: personal.dateOfBirth, name: personal.nameAsAadhaar };
+  if (type === "PASSPORT") return { fileNumber: personal.passportFileNumber, dob: personal.dateOfBirth, name: names };
   if (type === "FACE_LIVENESS" && sensitiveInputs?.selfie) return sensitiveInputs.selfie as unknown as Record<string, unknown>;
   if (type === "FACE_MATCH" && sensitiveInputs?.selfie && sensitiveInputs?.idCard) {
     return { selfie: sensitiveInputs.selfie, idCard: sensitiveInputs.idCard } as unknown as Record<string, unknown>;
@@ -59,6 +62,19 @@ function applicationToPayload(
     state: data.criminal?.state
   };
   return { name: personal.nameAsAadhaar, qualification: education.highestQualification, courseName: education.courseName };
+}
+
+/** Worker-facing reason when the provider says the number is not found or not valid. */
+function rejectionReason(type: VerificationType): string {
+  const what: Partial<Record<VerificationType, string>> = {
+    PAN: "This PAN was not found",
+    DRIVING_LICENSE: "This licence was not found for that date of birth",
+    VOTER_ID: "This voter ID was not found",
+    PASSPORT: "This passport file number was not found for your date of birth",
+    RC_V2: "This vehicle number was not found",
+    EMPLOYMENT_HISTORY: "No employment record was found for this UAN"
+  };
+  return `${what[type] ?? "This number was not found"}. Check it and try again.`;
 }
 
 @Injectable()
@@ -178,10 +194,15 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
     if (["VERIFIED", "MANUAL_REVIEW", "PENDING"].includes(verification.status)) return;
     const owner = { tenantId: application.tenantId, clientId: application.clientId };
     const uncertain = await this.store.hasDispatchedCall(verification.id, owner, job.data.inputAfterAttempt);
-    const providerError = error as Error & { code?: string };
+    const providerError = error as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
+    // A provider rejection (4xx) means the number was not found or not valid: tell the worker what to fix.
+    const rejected = providerError.code === "PROVIDER_HTTP_ERROR";
     await this.store.setResult(verification.id, uncertain ? "MANUAL_REVIEW" : "FAILED", {
       failureCode: uncertain ? "PROVIDER_OUTCOME_UNKNOWN" : providerError.code || "PROVIDER_UNAVAILABLE",
-      failureReason: uncertain ? "Provider accounting requires reconciliation; automatic replay is blocked" : "Provider request could not complete",
+      failureReason: uncertain
+        ? "Provider accounting requires reconciliation; automatic replay is blocked"
+        : rejected ? rejectionReason(verification.type) : "We could not complete this check. Try again in a few minutes.",
+      failureResponse: providerError.providerResponse ?? null,
       attemptCount: Math.max(verification.attemptCount, job.attemptsMade)
     }, owner);
     if (uncertain || error.name === "UnrecoverableError" || job.attemptsMade >= (job.opts.attempts || 1)) {

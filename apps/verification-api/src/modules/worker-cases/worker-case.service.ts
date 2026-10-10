@@ -68,9 +68,13 @@ export class WorkerCaseService {
    */
   async saveName(worker: WorkerIdentity, client: ClientContext, fullName: unknown) {
     const { application, owner } = await this.current(worker, client);
-    if (application.data.identity?.status === "VERIFIED") throw new ConflictException("Your name comes from Aadhaar and cannot be changed");
-    const name = personName(fullName, "Enter your full name as on your Aadhaar");
-    const updated = await this.store.updateApplicationData(application.id, owner, (data) => ({ ...data, personal: { ...data.personal, nameAsAadhaar: name } }));
+    const name = personName(fullName, "Enter your full name as on your PAN card");
+    const aadhaarVerified = application.data.identity?.status === "VERIFIED";
+    // Kept as typed. Until Aadhaar is verified it is also the name checks are matched to;
+    // after that it only counts where it fits the Aadhaar name (see referenceNames).
+    const updated = await this.store.updateApplicationData(application.id, owner, (data) => ({
+      ...data, personal: { ...data.personal, declaredName: name, ...(aadhaarVerified ? {} : { nameAsAadhaar: name }) }
+    }));
     return this.view(updated, owner);
   }
 
@@ -180,6 +184,9 @@ export class WorkerCaseService {
     if (!identity) throw new BadRequestException("Start Aadhaar verification first");
     if (identity.status === "VERIFIED") return this.view(application, owner);
     if (identity.source === "DIGILOCKER") return this.completeDigiLocker(application, owner);
+    // The app polls every few seconds; ask the provider at most every 10 seconds.
+    if (identity.checkedAt && Date.now() - Date.parse(identity.checkedAt) < 10_000) return this.view(application, owner);
+    await this.store.updateApplicationData(application.id, owner, (data) => ({ ...data, identity: { ...identity, checkedAt: new Date().toISOString() } }));
     const [row] = await this.rowsFor(application.id, ["AADHAAR"]);
 
     const { status } = await this.aadhaar.status(identity.sessionId, client);
@@ -368,6 +375,7 @@ export class WorkerCaseService {
       details: {
         source: data.identity?.status === "VERIFIED" ? "AADHAAR" : data.personal.nameAsAadhaar ? "WORKER" : null,
         fullName: data.personal.nameAsAadhaar || null,
+        declaredName: data.personal.declaredName ?? null,
         dateOfBirth: data.personal.dateOfBirth || null,
         fatherName: data.criminal?.fatherName ?? null,
         address: data.personal.submittedAddress ?? null
