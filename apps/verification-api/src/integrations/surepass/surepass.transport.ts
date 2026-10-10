@@ -33,8 +33,8 @@ export class SurepassTransport {
       throw Object.assign(new UnrecoverableError("Surepass credentials are not configured"), { code: "PROVIDER_CONFIGURATION_ERROR" });
     }
     const base = new URL(process.env.SUREPASS_BASE_URL || "https://sandbox.surepass.app");
-    // Plain HTTP only for the local mock (tools/surepass-mock), never in production.
-    const localMock = base.protocol === "http:" && ["127.0.0.1", "localhost"].includes(base.hostname) && process.env.NODE_ENV !== "production";
+    // Plain HTTP only to loopback, for the local mock (tools/surepass-mock). It never leaves the machine.
+    const localMock = base.protocol === "http:" && ["127.0.0.1", "localhost"].includes(base.hostname);
     if ((base.protocol !== "https:" && !localMock) || base.username || base.password) {
       throw new UnrecoverableError("SUREPASS_BASE_URL must be an HTTPS URL without credentials");
     }

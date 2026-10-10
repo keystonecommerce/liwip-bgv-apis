@@ -32,8 +32,8 @@ async function eventually<T>(read: () => Promise<T>, accept: (value: T) => boole
   const deadline = Date.now() + timeout;
   while (true) { const result = await read(); if (accept(result)) return result; if (Date.now() >= deadline) throw new Error(`Timed out waiting for state: ${JSON.stringify(result)}`); await new Promise(resolve => setTimeout(resolve, 30)); }
 }
-async function createCase(owner: any, code = packageCode) {
-  const response = await api().post("/v1/applications").set("x-api-key", owner.rawKey).send({ packageCode: code, personal: { panNumber: "ABCDE1234F", nameAsAadhaar: "Test Worker", submittedAddress: "Test Address" }, consent: { granted: true } });
+async function createCase(owner: any, code = packageCode, nameAsAadhaar = "Test Worker") {
+  const response = await api().post("/v1/applications").set("x-api-key", owner.rawKey).send({ packageCode: code, personal: { panNumber: "ABCDE1234F", nameAsAadhaar, submittedAddress: "Test Address" }, consent: { granted: true } });
   assert.equal(response.status, 201, JSON.stringify(response.body));
   return response.body;
 }
@@ -58,6 +58,7 @@ before(async () => {
   process.env.ADMIN_API_KEY = adminKey; process.env.PORTAL_AUTH_TOKEN_SECRET = "test_only_secret_longer_than_32_characters";
   process.env.THROTTLE_LIMIT = "10000"; process.env.PARTNER_RATE_LIMIT = "10000"; process.env.SUREPASS_BEARER_TOKEN = "test_only_fake_token";
   process.env.SUREPASS_TIMEOUT_MS = "1000";
+  process.env.MOCK_NAME = "Test Worker"; // the name the mock returns for identity lookups
   execFileSync(process.execPath, ["node_modules/prisma/build/index.js", "migrate", "deploy"], { env: process.env, stdio: "pipe" });
   db = new PrismaClient();
   provider = createSurepassMock({ token: "test_only_fake_token" });
@@ -112,6 +113,12 @@ test("confirmed digital work is counted once per successful provider call", asyn
   assert.equal(row.clientId, partnerA.client.id); assert.equal(row.tenantId, partnerA.tenant.id); assert.equal(row.apiKeyId, partnerA.apiKey.id);
   assert.equal(row.state, "SUCCESS"); assert.equal(row.operation, "/api/v1/pan/pan-comprehensive");
   assert.equal((await api().post(`/v1/verifications/${done.verifications[0].id}/retry`).set("x-api-key", partnerA.rawKey)).status, 400);
+});
+test("a lookup whose name does not match the worker goes to review, not VERIFIED", async () => {
+  setMode("success");
+  const created = await createCase(partnerA, packageCode, "Someone Else"), done = await awaitCase(created.id);
+  assert.equal(done.status, "MANUAL_REVIEW"); assert.equal(done.verifications[0].status, "MANUAL_REVIEW");
+  assert.equal(done.verificationCard, null);
 });
 test("two organizations cannot read, retry, decide or aggregate each other's cases", async () => {
   setMode("success"); const foreign = await createCase(partnerB); const done = await awaitCase(foreign.id);
