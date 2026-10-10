@@ -119,6 +119,39 @@ export class WorkerCaseService {
   }
 
   /**
+   * Adds checks to a case that is already under way, for example after the card is
+   * issued. Consent covers only the new purposes; the card stays valid and shows as
+   * updating until the new checks finish.
+   */
+  async addChecks(worker: WorkerIdentity, client: ClientContext, input: { checks?: string[]; items?: string[]; textVersion?: string }) {
+    const { application, owner } = await this.current(worker, client);
+    this.requireConsent(application);
+    const existing = new Set(application.data.selectedChecks ?? []);
+    const added = [...new Set((Array.isArray(input?.checks) ? input.checks : []).map((item) => String(item).toUpperCase()))].filter((check) => !existing.has(check));
+    if (!added.length) throw new BadRequestException("Choose at least one new check");
+    for (const check of added) {
+      if (!isSelectableCheck(check) || !isSelectableAvailable(check)) throw new BadRequestException(`${check} is not available`);
+      const requires = SELECTABLE_CHECKS[check].requires;
+      if (requires && !existing.has(requires) && !added.includes(requires)) throw new BadRequestException(`${check} needs ${requires} as well`);
+    }
+    const items = new Set((Array.isArray(input?.items) ? input.items : []).map(String));
+    const already = new Set(application.data.consentItems ?? []);
+    const needed = [...new Set(added.map((check) => SELECTABLE_CHECKS[check as SelectableCheck].consent))].filter((item) => !already.has(item));
+    const missing = needed.filter((item) => !items.has(item));
+    if (missing.length) throw new BadRequestException(`Consent is needed for: ${missing.join(", ")}`);
+    await this.store.updateApplicationData(application.id, owner, (data) => ({
+      ...data,
+      selectedChecks: [...(data.selectedChecks ?? []), ...added],
+      consentItems: [...new Set([...(data.consentItems ?? []), ...needed])],
+      biometricConsent: data.biometricConsent || needed.includes("face"),
+      criminal: { ...data.criminal, consent: data.criminal?.consent || needed.includes("court") }
+    }));
+    await this.store.addVerifications(application.id, added.flatMap((check) => SELECTABLE_CHECKS[check as SelectableCheck].types).map((type) => ({ type, status: "PENDING" as const })));
+    await this.startReadyChecks(application.id, owner);
+    return this.view(await this.reload(application.id, owner), owner);
+  }
+
+  /**
    * Name, date of birth, father's name and address. Typed by the worker when they
    * did not choose Aadhaar; with Aadhaar only the gaps (father's name, address) can be filled.
    */
@@ -233,6 +266,12 @@ export class WorkerCaseService {
     if (kind === "FACE") {
       if (!selfie || !SELFIE_TYPES.has(selfie.mimetype) || selfie.size > 5 * 1024 * 1024) throw new BadRequestException("Take a clear photo (JPEG or PNG, up to 5 MB)");
       const photo = await this.aadhaarPhoto(application, client);
+      // The selfie becomes the card photo once face match passes; kept now, shown only on the card.
+      await this.prisma.workerPhoto.upsert({
+        where: { applicationId: application.id },
+        update: { bytes: selfie.buffer, contentType: selfie.mimetype },
+        create: { applicationId: application.id, bytes: selfie.buffer, contentType: selfie.mimetype }
+      });
       this.store.setSensitiveInputs(application.id, {
         ...this.store.getSensitiveInputs(application.id),
         selfie: { buffer: selfie.buffer, originalname: selfie.originalname || "selfie.jpg", mimetype: selfie.mimetype },

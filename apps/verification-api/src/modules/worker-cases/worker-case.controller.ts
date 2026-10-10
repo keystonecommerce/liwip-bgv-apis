@@ -51,6 +51,13 @@ export class WorkerCaseController {
     return this.cases.saveDetails(worker, client, body || {});
   }
 
+  @Post("checks/add")
+  @HttpCode(200)
+  async addChecks(@Body() body: { checks?: string[]; items?: string[] }, @CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
+    await this.limit(worker, "caseEditsPerWorker");
+    return this.cases.addChecks(worker, client, body);
+  }
+
   @Post("consent")
   @HttpCode(200)
   async consent(@Body() body: { textVersion?: string; items?: string[] }, @CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {

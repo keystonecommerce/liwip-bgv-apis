@@ -46,6 +46,12 @@ export class AdminController {
   }
 
   // Fresh start for one worker: archives their cases and removes their passkeys.
+  // Support: a reviewer's decision on a check in review.
+  @Post("worker-cases/decide")
+  decideCheck(@Body() body: { phone?: string; type?: string; decision?: string; note?: string }) {
+    return this.admin.decideCheck(body);
+  }
+
   @Post("worker-cases/reset")
   resetWorker(@Body() body: { phone?: string; clientId?: string }) {
     return this.admin.resetWorker(body);

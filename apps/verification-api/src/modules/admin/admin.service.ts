@@ -4,12 +4,13 @@ import IORedis from "ioredis";
 import { redisConnectionOptions } from "../../config/redis";
 import { PrismaService } from "../../common/database/prisma.service";
 import { RateLimitService } from "../../common/security/rate-limit.service";
+import { VerificationStore } from "../verifications/verification.repository";
 import { PartnerProvisioning, CreatePartnerInput, IssueKeyInput } from "../../common/security/partner-provisioning";
 export type { CreatePartnerInput, IssueKeyInput } from "../../common/security/partner-provisioning";
 @Injectable()
 export class AdminService {
   private readonly provisioning: PartnerProvisioning;
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService, @Inject(RateLimitService) private readonly limits: RateLimitService) { this.provisioning = new PartnerProvisioning(prisma); }
+  constructor(@Inject(PrismaService) private readonly prisma: PrismaService, @Inject(RateLimitService) private readonly limits: RateLimitService, @Inject(VerificationStore) private readonly store: VerificationStore) { this.provisioning = new PartnerProvisioning(prisma); }
   createPartner(input: CreatePartnerInput) { return this.provisioning.createPartner(input); }
   issueKey(clientId: string, input: IssueKeyInput) { return this.provisioning.issueKey(clientId, input); }
   rotateKey(id: string) { return this.provisioning.rotateKey(id); }
@@ -126,9 +127,29 @@ export class AdminService {
       where: { applicationId: application.id, type: { in: types }, status: { in: ["VERIFIED", "FAILED", "MANUAL_REVIEW"] } },
       data: { status: "PENDING", result: Prisma.DbNull, failureCode: null, failureReason: null, failureResponse: Prisma.DbNull, completedAt: null }
     });
-    await this.prisma.verificationCard.updateMany({ where: { applicationId: application.id, status: "ACTIVE" }, data: { status: "SUSPENDED" } });
+    // A released card stays; it shows as updating until the reopened checks finish.
     await this.prisma.application.update({ where: { id: application.id }, data: { status: "PENDING_VERIFICATION" } });
     return { applicationId: application.id, reopened: reopened.count };
+  }
+
+  /** A reviewer's decision on a check in review: verified or failed. Releases the card when the case is ready. */
+  async decideCheck(input: { phone?: string; type?: string; decision?: string; note?: string }) {
+    const phone = this.workerPhone(String(input?.phone || ""));
+    const type = String(input?.type || "").toUpperCase();
+    const decision = String(input?.decision || "").toUpperCase();
+    if (!type || (decision !== "VERIFIED" && decision !== "FAILED")) throw new BadRequestException("type and decision (VERIFIED or FAILED) are required");
+    const note = String(input?.note || "").slice(0, 300) || null;
+    const application = await this.prisma.application.findFirst({ where: { workerPhone: phone }, orderBy: { createdAt: "desc" }, select: { id: true } });
+    if (!application) throw new NotFoundException("No case for this number");
+    const decided = await this.prisma.verification.updateMany({
+      where: { applicationId: application.id, type, status: "MANUAL_REVIEW" },
+      data: decision === "VERIFIED"
+        ? { status: "VERIFIED", failureCode: null, failureReason: null, completedAt: new Date() }
+        : { status: "FAILED", failureCode: "REVIEW_REJECTED", failureReason: note ?? "Rejected in review", completedAt: new Date() }
+    });
+    if (!decided.count) throw new NotFoundException(`No ${type} check in review`);
+    const updated = await this.store.recalculateApplicationStatus(application.id);
+    return { applicationId: application.id, decided: decided.count, status: updated.status, cardIssued: Boolean(updated.card) };
   }
 
   private workerPhone(input: string): string {
