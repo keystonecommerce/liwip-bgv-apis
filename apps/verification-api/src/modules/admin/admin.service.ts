@@ -1,4 +1,6 @@
-import { BadRequestException, Inject, Injectable } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Inject, Injectable } from "@nestjs/common";
+import IORedis from "ioredis";
+import { redisConnectionOptions } from "../../config/redis";
 import { PrismaService } from "../../common/database/prisma.service";
 import { PartnerProvisioning, CreatePartnerInput, IssueKeyInput } from "../../common/security/partner-provisioning";
 export type { CreatePartnerInput, IssueKeyInput } from "../../common/security/partner-provisioning";
@@ -44,5 +46,41 @@ export class AdminService {
       const passkeys = await tx.workerPasskey.deleteMany({ where: { workerPhone: phone, ...scope } });
       return { phone: `******${national.slice(-4)}`, casesArchived: cases.count, passkeysRemoved: passkeys.count };
     });
+  }
+
+  /**
+   * Hard delete of ALL worker data, for resetting a test environment. Off unless
+   * ADMIN_PURGE_ENABLED=true and the exact confirmation phrase is sent. Keeps
+   * tenants, clients, API keys, packages and portal users.
+   */
+  async purgeWorkerData(input: { confirm?: string }) {
+    if (process.env.ADMIN_PURGE_ENABLED !== "true") throw new ForbiddenException("Purge is disabled");
+    if (input?.confirm !== "DELETE ALL WORKER DATA") throw new BadRequestException('Send {"confirm":"DELETE ALL WORKER DATA"}');
+    const tables = ["ProviderCall", "UsageEvent", "FieldEvidence", "FieldTask", "VerificationCard", "ApplicationDocument", "Verification", "Application", "AadhaarOvseSession", "WorkerPasskey", "AuditLog"];
+    const deleted = await this.prisma.$transaction(async (tx) => {
+      // The ledger refuses deletes by design; lift that only inside this transaction.
+      await tx.$executeRawUnsafe('ALTER TABLE "ProviderCall" DISABLE TRIGGER "ProviderCall_immutable"');
+      const counts: Record<string, number> = {};
+      for (const table of tables) counts[table] = await tx.$executeRawUnsafe(`DELETE FROM "${table}"`);
+      await tx.$executeRawUnsafe('ALTER TABLE "ProviderCall" ENABLE TRIGGER "ProviderCall_immutable"');
+      return counts;
+    }, { timeout: 60_000 });
+
+    // OTP challenges, passkey challenges, rate-limit counters and queued jobs.
+    const redis = new IORedis({ ...redisConnectionOptions(), maxRetriesPerRequest: 1 });
+    let redisKeys = 0;
+    try {
+      for (const pattern of ["liwip:*", "gig-verification-v1:*"]) {
+        let cursor = "0";
+        do {
+          const [next, keys] = await redis.scan(cursor, "MATCH", pattern, "COUNT", 500);
+          cursor = next;
+          if (keys.length) redisKeys += await redis.del(...keys);
+        } while (cursor !== "0");
+      }
+    } finally {
+      redis.disconnect();
+    }
+    return { deleted, redisKeys };
   }
 }

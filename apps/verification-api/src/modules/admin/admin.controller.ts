@@ -39,6 +39,12 @@ export class AdminController {
     return this.admin.resetWorker(body);
   }
 
+  // Test environments only: hard delete of all worker data. Off unless ADMIN_PURGE_ENABLED=true.
+  @Post("worker-data/purge")
+  purgeWorkerData(@Body() body: { confirm?: string }) {
+    return this.admin.purgeWorkerData(body);
+  }
+
   @Post("partners")
   createPartner(@Body() body: CreatePartnerInput) {
     return this.admin.createPartner(body);
