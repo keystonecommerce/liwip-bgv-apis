@@ -1,4 +1,5 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import IORedis from "ioredis";
 import { redisConnectionOptions } from "../../config/redis";
 import { PrismaService } from "../../common/database/prisma.service";
@@ -88,5 +89,51 @@ export class AdminService {
       redis.disconnect();
     }
     return { deleted, redisKeys };
+  }
+
+  /** Support view of one worker's current case: each check's state and the name the provider returned. */
+  async inspectWorker(phoneInput: string) {
+    const phone = this.workerPhone(phoneInput);
+    const application = await this.prisma.application.findFirst({
+      where: { workerPhone: phone }, orderBy: { createdAt: "desc" },
+      include: { verifications: { orderBy: { createdAt: "asc" } } }
+    });
+    if (!application) throw new NotFoundException("No case for this number");
+    const data = application.data as { personal?: Record<string, unknown>; identity?: Record<string, unknown> };
+    const NAME_FIELDS = ["full_name", "name", "owner_name", "name_on_card", "father_name", "rc_status", "status", "doe", "fit_up_to", "insurance_upto"];
+    return {
+      applicationId: application.id,
+      status: application.status,
+      names: { aadhaar: data.identity?.fullName ?? null, declared: data.personal?.declaredName ?? null, matchedAgainst: data.personal?.nameAsAadhaar ?? null },
+      checks: application.verifications.map((row) => ({
+        id: row.id, type: row.type, status: row.status, failureCode: row.failureCode, failureReason: row.failureReason,
+        // Only the fields that explain a decision, never document numbers.
+        provider: Object.fromEntries(Object.entries((row.result ?? {}) as Record<string, unknown>).filter(([key]) => NAME_FIELDS.includes(key))),
+        providerError: row.failureResponse ?? null,
+        updatedAt: row.updatedAt
+      }))
+    };
+  }
+
+  /** Puts checks back to waiting for the worker, so they can submit again. Progress elsewhere is kept. */
+  async reopenChecks(input: { phone?: string; types?: string[] }) {
+    const phone = this.workerPhone(String(input?.phone || ""));
+    const types = (Array.isArray(input?.types) ? input.types : []).map((type) => String(type).toUpperCase());
+    if (!types.length || types.some((type) => type === "AADHAAR")) throw new BadRequestException("types must list checks to reopen (not AADHAAR)");
+    const application = await this.prisma.application.findFirst({ where: { workerPhone: phone }, orderBy: { createdAt: "desc" }, select: { id: true } });
+    if (!application) throw new NotFoundException("No case for this number");
+    const reopened = await this.prisma.verification.updateMany({
+      where: { applicationId: application.id, type: { in: types }, status: { in: ["VERIFIED", "FAILED", "MANUAL_REVIEW"] } },
+      data: { status: "PENDING", result: Prisma.DbNull, failureCode: null, failureReason: null, failureResponse: Prisma.DbNull, completedAt: null }
+    });
+    await this.prisma.verificationCard.updateMany({ where: { applicationId: application.id, status: "ACTIVE" }, data: { status: "SUSPENDED" } });
+    await this.prisma.application.update({ where: { id: application.id }, data: { status: "PENDING_VERIFICATION" } });
+    return { applicationId: application.id, reopened: reopened.count };
+  }
+
+  private workerPhone(input: string): string {
+    const national = String(input || "").replace(/\D/g, "").replace(/^91(?=\d{10}$)/, "");
+    if (!/^[6-9]\d{9}$/.test(national)) throw new BadRequestException("phone must be a 10-digit Indian mobile number");
+    return `91${national}`;
   }
 }
