@@ -33,6 +33,12 @@ export class AdminController {
     });
   }
 
+  // Fresh start for one worker: archives their cases and removes their passkeys.
+  @Post("worker-cases/reset")
+  resetWorker(@Body() body: { phone?: string; clientId?: string }) {
+    return this.admin.resetWorker(body);
+  }
+
   @Post("partners")
   createPartner(@Body() body: CreatePartnerInput) {
     return this.admin.createPartner(body);

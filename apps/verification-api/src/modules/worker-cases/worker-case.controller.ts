@@ -33,6 +33,12 @@ export class WorkerCaseController {
     return this.cases.open(worker, client);
   }
 
+  @Put("name")
+  async saveName(@Body() body: { fullName?: string }, @CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
+    await this.limit(worker, "caseEditsPerWorker");
+    return this.cases.saveName(worker, client, body?.fullName);
+  }
+
   @Put("checks")
   async selectChecks(@Body() body: { checks?: string[] }, @CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
     await this.limit(worker, "caseEditsPerWorker");
