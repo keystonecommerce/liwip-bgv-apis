@@ -88,6 +88,8 @@ export interface WorkerIdentityRecord {
   pincode?: string;
   careOf?: string;
   verifiedAt?: string;
+  /** Last time the provider was asked for this session's status (polling is throttled). */
+  checkedAt?: string;
 }
 
 export interface PackageCheckRule {

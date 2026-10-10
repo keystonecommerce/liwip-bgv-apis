@@ -65,6 +65,13 @@ export class WorkerCaseController {
     return this.cases.startAadhaar(worker, client);
   }
 
+  @Post("identity/digilocker/start")
+  @HttpCode(200)
+  async startDigiLocker(@CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
+    await this.limit(worker, "aadhaarPerWorker");
+    return this.cases.startDigiLocker(worker, client);
+  }
+
   @Post("identity/aadhaar/complete")
   @HttpCode(200)
   completeAadhaar(@CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {

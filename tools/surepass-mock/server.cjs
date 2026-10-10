@@ -33,7 +33,18 @@ function createSurepassMock({ token = 'mock_surepass_token', port = 0, timeoutMs
       // Identity lookups return a name; the backend only verifies when it matches the worker.
       body.data.full_name = body.data.name = body.data.owner_name = process.env.MOCK_NAME || 'Ravi Kumar';
       body.data.result = scenario === 'manual' ? [{ finding: 'Mock finding requiring QA' }] : [];
-      if (url.pathname.endsWith('/digilocker/initialize')) Object.assign(body.data, { token: 'mock_session_token', url: 'https://example.test/mock-session', expiry_seconds: 600 });
+      if (url.pathname.endsWith('/digilocker/initialize')) {
+        // The real page returns the worker to redirect_url after OTP and consent; the mock does it at once.
+        let redirect = 'https://example.test/mock-session';
+        try { redirect = JSON.parse(Buffer.concat(chunks).toString() || '{}').data?.redirect_url || redirect; } catch {}
+        Object.assign(body.data, { token: 'mock_session_token', url: redirect, expiry_seconds: 600 });
+      }
+      if (url.pathname.includes('/digilocker/status/')) Object.assign(body.data, { status: 'completed', completed: true, failed: false, aadhaar_linked: true });
+      if (url.pathname.includes('/digilocker/download-aadhaar/')) Object.assign(body.data, { aadhaar_xml_data: {
+        full_name: process.env.MOCK_NAME || 'Ravi Kumar', dob: '15-08-1994', gender: 'M', care_of: 'S/O: Suresh Kumar', father_name: 'Suresh Kumar',
+        full_address: '12 MG Road, Indiranagar, Bengaluru, Karnataka 560038', zip: '560038', masked_aadhaar: 'XXXXXXXX1234',
+        profile_image: '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/yQALCAABAAEBAREA/8wABgAQEAX/2gAIAQEAAD8A0s8g/9k='
+      } });
       if (url.pathname.endsWith('/aadhaar-v4/initialize')) {
         // The real page sends the worker back to redirect_url after OTP; the mock does it at once.
         let redirect = 'https://example.test/mock-aadhaar';
