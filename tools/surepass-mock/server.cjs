@@ -31,11 +31,11 @@ function createSurepassMock({ token = 'mock_surepass_token', port = 0, timeoutMs
       if (scenario === 'timeout') { const timer = setTimeout(() => json(res, 200, body), timeoutMs); res.on('close', () => clearTimeout(timer)); return; }
       body.data.match_status = scenario !== 'negative'; body.data.live = scenario !== 'negative';
       // Identity lookups return a name; the backend only verifies when it matches the worker.
-      body.data.full_name = body.data.name = process.env.MOCK_NAME || 'Ravi Kumar';
+      body.data.full_name = body.data.name = body.data.owner_name = process.env.MOCK_NAME || 'Ravi Kumar';
       body.data.result = scenario === 'manual' ? [{ finding: 'Mock finding requiring QA' }] : [];
       if (url.pathname.endsWith('/digilocker/initialize')) Object.assign(body.data, { token: 'mock_session_token', url: 'https://example.test/mock-session', expiry_seconds: 600 });
       if (url.pathname.endsWith('/aadhaar-v4/initialize')) {
-        Object.assign(body.data, { url: 'https://example.test/mock-aadhaar', status: 'pending', expiry_seconds: 600 }); sessions.set(body.data.client_id, true);
+        Object.assign(body.data, { url: 'https://example.test/mock-aadhaar', web_link: 'https://example.test/mock-aadhaar', status: 'pending', expiry_seconds: 600 }); sessions.set(body.data.client_id, true);
       }
       if (url.pathname.endsWith('/aadhaar-v4/status') || url.pathname.endsWith('/aadhaar-v4/result')) {
         const clientId = url.searchParams.get('client_id');

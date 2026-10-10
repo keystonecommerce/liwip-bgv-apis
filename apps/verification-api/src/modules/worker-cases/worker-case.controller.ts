@@ -7,7 +7,7 @@ import { RequireScopes } from "../../common/auth/scopes";
 import { CurrentWorker, WorkerGuard } from "../../common/auth/worker.guard";
 import type { WorkerIdentity } from "../../common/auth/worker-token";
 import { isWorkerCheckKind } from "./worker-case.inputs";
-import { SelfieUpload, WorkerCaseService } from "./worker-case.service";
+import { DetailsInput, SelfieUpload, WorkerCaseService } from "./worker-case.service";
 
 /**
  * A worker's own case. Needs the platform API key and the worker token from OTP
@@ -24,9 +24,14 @@ export class WorkerCaseController {
     return this.cases.open(worker, client);
   }
 
-  @Put("package")
-  choosePackage(@Body() body: { packageCode?: string }, @CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
-    return this.cases.choosePackage(worker, client, String(body?.packageCode || ""));
+  @Put("checks")
+  selectChecks(@Body() body: { checks?: string[] }, @CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
+    return this.cases.selectChecks(worker, client, body);
+  }
+
+  @Put("details")
+  saveDetails(@Body() body: DetailsInput, @CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
+    return this.cases.saveDetails(worker, client, body || {});
   }
 
   @Post("consent")

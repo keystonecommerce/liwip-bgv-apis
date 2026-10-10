@@ -69,8 +69,10 @@ export interface ApplicationSchema {
   };
   addressConsent?: boolean;
   biometricConsent?: boolean;
-  /** Consent rows the worker ticked, by id (case, identity, face, court, address). */
+  /** Consent rows the worker ticked, by id (case, identity, face, vehicle, employment, court). */
   consentItems?: string[];
+  /** Checks the worker chose to run (worker self-verification). */
+  selectedChecks?: string[];
   /** Identity the worker proved with Aadhaar. Every name-matched check compares against fullName. */
   identity?: WorkerIdentityRecord;
 }

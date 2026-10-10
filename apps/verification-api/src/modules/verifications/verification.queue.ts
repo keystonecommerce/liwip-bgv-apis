@@ -36,7 +36,7 @@ function applicationToPayload(
   if (type === "VOTER_ID") return { idNumber: personal.voterId, fullName: personal.nameAsAadhaar, dob: personal.dateOfBirth };
   if (type === "ADDRESS_MATCHING") return { address1: personal.submittedAddress, address2: officialAddress };
   if (type === "RC_FULL") return { idNumber: vehicle.registrationNumber };
-  if (type === "RC_V2") return { idNumber: vehicle.registrationNumber };
+  if (type === "RC_V2") return { idNumber: vehicle.registrationNumber, name: personal.nameAsAadhaar };
   if (type === "CIBIL_SCORE") return { pan: personal.panNumber, mobile: personal.phone, name: personal.nameAsAadhaar, gender: personal.gender };
   if (type === "PASSPORT") return { fileNumber: personal.passportFileNumber, dob: personal.dateOfBirth, name: personal.nameAsAadhaar };
   if (type === "FACE_LIVENESS" && sensitiveInputs?.selfie) return sensitiveInputs.selfie as unknown as Record<string, unknown>;

@@ -95,7 +95,9 @@ export class SurepassProvider implements VerificationProvider {
       return this.toVerificationResponse(await this.verifyRcFull({ idNumber: String(payload.idNumber) }), "RC Full");
     }
     if (type === "RC_V2") {
-      return this.toVerificationResponse(await this.verifyRcV2({ idNumber: String(payload.idNumber), enrich: false }), "RC V2");
+      return this.toVerificationResponse(await this.verifyRcV2({ idNumber: String(payload.idNumber), enrich: false }), "RC V2", false,
+        // The owner is often a fleet or family member, so a different name goes to review, not failed.
+        nameStatus(payload.name, "owner_name"));
     }
     if (type === "CIBIL_SCORE") {
       return this.toVerificationResponse(await this.verifyCibilScore({
