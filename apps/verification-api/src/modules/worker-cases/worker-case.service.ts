@@ -180,6 +180,9 @@ export class WorkerCaseService {
     if (!identity) throw new BadRequestException("Start Aadhaar verification first");
     if (identity.status === "VERIFIED") return this.view(application, owner);
     if (identity.source === "DIGILOCKER") return this.completeDigiLocker(application, owner);
+    // The app polls every few seconds; ask the provider at most every 10 seconds.
+    if (identity.checkedAt && Date.now() - Date.parse(identity.checkedAt) < 10_000) return this.view(application, owner);
+    await this.store.updateApplicationData(application.id, owner, (data) => ({ ...data, identity: { ...identity, checkedAt: new Date().toISOString() } }));
     const [row] = await this.rowsFor(application.id, ["AADHAAR"]);
 
     const { status } = await this.aadhaar.status(identity.sessionId, client);

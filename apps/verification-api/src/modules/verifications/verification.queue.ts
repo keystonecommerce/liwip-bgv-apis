@@ -61,6 +61,19 @@ function applicationToPayload(
   return { name: personal.nameAsAadhaar, qualification: education.highestQualification, courseName: education.courseName };
 }
 
+/** Worker-facing reason when the provider says the number is not found or not valid. */
+function rejectionReason(type: VerificationType): string {
+  const what: Partial<Record<VerificationType, string>> = {
+    PAN: "This PAN was not found",
+    DRIVING_LICENSE: "This licence was not found for that date of birth",
+    VOTER_ID: "This voter ID was not found",
+    PASSPORT: "This passport file number was not found for your date of birth",
+    RC_V2: "This vehicle number was not found",
+    EMPLOYMENT_HISTORY: "No employment record was found for this UAN"
+  };
+  return `${what[type] ?? "This number was not found"}. Check it and try again.`;
+}
+
 @Injectable()
 export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(VerificationQueue.name);
@@ -178,10 +191,15 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
     if (["VERIFIED", "MANUAL_REVIEW", "PENDING"].includes(verification.status)) return;
     const owner = { tenantId: application.tenantId, clientId: application.clientId };
     const uncertain = await this.store.hasDispatchedCall(verification.id, owner, job.data.inputAfterAttempt);
-    const providerError = error as Error & { code?: string };
+    const providerError = error as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
+    // A provider rejection (4xx) means the number was not found or not valid: tell the worker what to fix.
+    const rejected = providerError.code === "PROVIDER_HTTP_ERROR";
     await this.store.setResult(verification.id, uncertain ? "MANUAL_REVIEW" : "FAILED", {
       failureCode: uncertain ? "PROVIDER_OUTCOME_UNKNOWN" : providerError.code || "PROVIDER_UNAVAILABLE",
-      failureReason: uncertain ? "Provider accounting requires reconciliation; automatic replay is blocked" : "Provider request could not complete",
+      failureReason: uncertain
+        ? "Provider accounting requires reconciliation; automatic replay is blocked"
+        : rejected ? rejectionReason(verification.type) : "We could not complete this check. Try again in a few minutes.",
+      failureResponse: providerError.providerResponse ?? null,
       attemptCount: Math.max(verification.attemptCount, job.attemptsMade)
     }, owner);
     if (uncertain || error.name === "UnrecoverableError" || job.attemptsMade >= (job.opts.attempts || 1)) {

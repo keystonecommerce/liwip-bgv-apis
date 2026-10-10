@@ -164,7 +164,7 @@ export class SurepassProvider implements VerificationProvider {
         ? new UnrecoverableError(message)
         : new Error(message)) as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
       error.code = effectiveStatus === 429 || effectiveStatus >= 500 ? "PROVIDER_UNAVAILABLE" : "PROVIDER_HTTP_ERROR";
-      error.providerResponse = { status_code: effectiveStatus, success: body?.success ?? false, message_code: body?.message_code ?? null };
+      error.providerResponse = { status_code: effectiveStatus, success: body?.success ?? false, message_code: body?.message_code ?? null, message: typeof body?.message === "string" ? body.message.slice(0, 200) : null };
       throw error;
     }
     if (body?.success !== true || !body.data || typeof body.data !== "object" || Array.isArray(body.data)) {
