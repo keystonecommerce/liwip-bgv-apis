@@ -42,8 +42,8 @@ export class AuditInterceptor implements NestInterceptor {
 
     const start = Date.now();
     const method = request.method ?? "";
-    const path = request.route?.path ?? request.originalUrl ?? request.url ?? "";
-    const ip = firstHeader(request.headers["x-forwarded-for"]) ?? request.ip ?? request.socket?.remoteAddress ?? null;
+    const path = request.route?.path ?? "";
+    const ip = request.ip ?? request.socket?.remoteAddress ?? null;
     const userAgent = firstHeader(request.headers["user-agent"]) ?? null;
 
     const base = {
@@ -76,7 +76,7 @@ export class AuditInterceptor implements NestInterceptor {
         error: (error: unknown) => {
           const status = (error as { status?: number })?.status ?? 500;
           const outcome: AuditOutcome = status >= 500 ? "SERVER_ERROR" : "CLIENT_ERROR";
-          const message = error instanceof Error ? error.message : String(error);
+          const message = `Request failed with status ${status}`;
           this.audit.record({
             ...base,
             outcome,
@@ -89,3 +89,4 @@ export class AuditInterceptor implements NestInterceptor {
     );
   }
 }
+

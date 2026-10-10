@@ -1,5 +1,5 @@
 import { PrismaClient } from "@prisma/client";
-import { randomUUID } from "node:crypto";
+import { PartnerProvisioning } from "../apps/verification-api/src/common/security/partner-provisioning";
 
 const prisma = new PrismaClient();
 const args = new Map<string, string>();
@@ -29,24 +29,7 @@ async function main(): Promise<void> {
   const existing = await findKey();
   if (!existing) throw new Error("API key not found");
 
-  await prisma.apiKey.update({ where: { id: existing.id }, data: { isActive: false, revokedAt: new Date() } });
-  await prisma.auditLog.create({
-    data: {
-      id: `audit_${randomUUID()}`,
-      actorType: "ADMIN",
-      action: "apiKey.revoke",
-      outcome: "SUCCESS",
-      tenantId: existing.client.tenantId,
-      tenantSlug: existing.client.tenant.slug,
-      clientId: existing.clientId,
-      clientCode: existing.client.code,
-      apiKeyId: existing.id,
-      keyPrefix: existing.keyPrefix,
-      resourceType: "ApiKey",
-      resourceId: existing.id,
-      message: "Revoked via CLI"
-    }
-  });
+  const result = await new PartnerProvisioning(prisma).revokeKey(existing.id);
 
   console.log(`Revoked key ${existing.keyPrefix}… (${existing.id}) for ${existing.client.tenant.slug}/${existing.client.code}.`);
 }
@@ -57,3 +40,4 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => prisma.$disconnect());
+

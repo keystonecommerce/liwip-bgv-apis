@@ -1,6 +1,6 @@
 import { PrismaClient } from "@prisma/client";
-import { randomUUID } from "node:crypto";
-import { ALL_SCOPES, generateApiKey, normalizeScopes } from "../apps/verification-api/src/common/security/api-key.util";
+import { PartnerProvisioning } from "../apps/verification-api/src/common/security/partner-provisioning";
+import { ALL_SCOPES } from "../apps/verification-api/src/common/security/api-key.util";
 
 const prisma = new PrismaClient();
 const args = new Map<string, string>();
@@ -25,60 +25,14 @@ async function main(): Promise<void> {
   const clientCode = required("client-code").toUpperCase();
   const clientName = required("client-name");
 
-  // --scopes "applications:write,applications:read"  (defaults to all scopes)
-  const scopesArg = args.get("scopes");
-  const scopes = normalizeScopes(scopesArg ? scopesArg.split(",") : undefined);
-
-  // --expires-in-days 90  (optional; key never expires if omitted)
-  const daysArg = args.get("expires-in-days");
-  let expiresAt: Date | null = null;
-  if (daysArg) {
-    const days = Number(daysArg);
-    if (!Number.isFinite(days) || days <= 0) throw new Error("--expires-in-days must be a positive number");
-    expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
-  }
-
-  const { raw, keyHash, keyPrefix } = generateApiKey();
-
-  const tenant = await prisma.tenant.upsert({
-    where: { slug: tenantSlug },
-    update: { name: tenantName, status: "ACTIVE" },
-    create: { id: `tenant_${randomUUID()}`, slug: tenantSlug, name: tenantName, status: "ACTIVE" }
+  const result = await new PartnerProvisioning(prisma).createPartner({
+    tenantSlug, tenantName, clientCode, clientName,
+    keyName: args.get("key-name"),
+    scopes: args.has("scopes") ? args.get("scopes")!.split(",") : undefined,
+    expiresInDays: args.has("expires-in-days") ? Number(args.get("expires-in-days")) : undefined,
   });
-  const client = await prisma.client.upsert({
-    where: { tenantId_code: { tenantId: tenant.id, code: clientCode } },
-    update: { name: clientName, status: "ACTIVE" },
-    create: { id: `client_${randomUUID()}`, tenantId: tenant.id, code: clientCode, name: clientName, status: "ACTIVE" }
-  });
-  const apiKey = await prisma.apiKey.create({
-    data: {
-      id: `api_key_${randomUUID()}`,
-      clientId: client.id,
-      name: args.get("key-name") || "Platform API key",
-      keyPrefix,
-      keyHash,
-      scopes,
-      expiresAt
-    }
-  });
-
-  await prisma.auditLog.create({
-    data: {
-      id: `audit_${randomUUID()}`,
-      actorType: "ADMIN",
-      action: "partner.create",
-      outcome: "SUCCESS",
-      tenantId: tenant.id,
-      tenantSlug: tenant.slug,
-      clientId: client.id,
-      clientCode: client.code,
-      apiKeyId: apiKey.id,
-      keyPrefix,
-      resourceType: "ApiKey",
-      resourceId: apiKey.id,
-      message: `Provisioned via CLI with scopes: ${scopes.join(", ")}`
-    }
-  });
+  const { tenant, client, rawKey: raw } = result;
+  const { scopes, expiresAt } = result.apiKey;
 
   console.log("Tenant/client provisioned successfully.");
   console.log(`Tenant: ${tenant.slug}`);
@@ -95,3 +49,4 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => prisma.$disconnect());
+

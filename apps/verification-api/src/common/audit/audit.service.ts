@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, Logger } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../database/prisma.service";
 
@@ -86,7 +86,9 @@ export class AuditService {
 
   /** Read recent audit rows, newest first. Callers scope by tenant/client. */
   async list(query: AuditQuery) {
-    const limit = Math.min(Math.max(query.limit ?? 50, 1), 200);
+    const limit = query.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new BadRequestException("limit must be an integer from 1 to 200");
+    if (query.outcome && !["SUCCESS", "CLIENT_ERROR", "SERVER_ERROR", "REJECTED"].includes(query.outcome)) throw new BadRequestException("Invalid audit outcome");
     return this.prisma.auditLog.findMany({
       where: {
         tenantId: query.tenantId,
@@ -101,3 +103,4 @@ export class AuditService {
     });
   }
 }
+

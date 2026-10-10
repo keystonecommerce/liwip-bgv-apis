@@ -42,6 +42,7 @@ export class PortalAuthService {
     if (!portalRoles.includes(user.role as PortalRole)) throw new UnauthorizedException("This account has an unsupported portal role");
     if (input.role && input.role !== user.role) throw new UnauthorizedException("This account does not have access to the selected portal");
 
+    await this.validateOwnership(user);
     await this.prisma.portalUser.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
     const token = this.createToken({
       sub: user.id,
@@ -83,6 +84,8 @@ export class PortalAuthService {
     const user = await this.prisma.portalUser.findUnique({ where: { id: token.sub } });
     if (!user || user.status !== "ACTIVE") throw new UnauthorizedException("Session is no longer active");
     if (!portalRoles.includes(user.role as PortalRole)) throw new UnauthorizedException("This account has an unsupported portal role");
+    if (token.role !== user.role || (token.tenantId ?? null) !== user.tenantId || (token.clientId ?? null) !== user.clientId) throw new UnauthorizedException("Account access changed; sign in again");
+    await this.validateOwnership(user);
     return {
       userId: user.id,
       role: user.role as PortalRole,
@@ -91,6 +94,17 @@ export class PortalAuthService {
       email: user.email,
       displayName: user.displayName
     };
+  }
+
+  private async validateOwnership(user: { role: string; tenantId: string | null; clientId: string | null }) {
+    if (user.role.startsWith("CORPORATE_") && (!user.tenantId || !user.clientId)) throw new UnauthorizedException("Corporate account ownership is missing");
+    if (user.clientId) {
+      const client = await this.prisma.client.findFirst({ where: { id: user.clientId, tenantId: user.tenantId ?? "", status: "ACTIVE", tenant: { status: "ACTIVE" } }, select: { id: true } });
+      if (!client) throw new UnauthorizedException("Partner account is inactive");
+    } else if (user.tenantId) {
+      const tenant = await this.prisma.tenant.findFirst({ where: { id: user.tenantId, status: "ACTIVE" }, select: { id: true } });
+      if (!tenant) throw new UnauthorizedException("Tenant account is inactive");
+    }
   }
 
   private get tokenExpirySeconds(): number {
@@ -115,8 +129,8 @@ export class PortalAuthService {
 
   private readToken(authorization?: string): PortalToken {
     const value = authorization?.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
-    const [encoded, signature] = value.split(".");
-    if (!encoded || !signature) throw new UnauthorizedException("Bearer token is required");
+    const [encoded, signature, extra] = value.split(".");
+    if (!encoded || !signature || extra !== undefined || value.length > 2048) throw new UnauthorizedException("Bearer token is required");
     const expected = createHmac("sha256", this.secret).update(encoded).digest("base64url");
     const expectedBuffer = Buffer.from(expected);
     const signatureBuffer = Buffer.from(signature);
@@ -126,7 +140,7 @@ export class PortalAuthService {
 
     try {
       const token = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as PortalToken;
-      if (!portalRoles.includes(token.role) || !token.sub || token.exp <= Math.floor(Date.now() / 1000)) {
+      if (!portalRoles.includes(token.role) || typeof token.sub !== "string" || !token.sub || !Number.isSafeInteger(token.exp) || token.exp <= Math.floor(Date.now() / 1000)) {
         throw new UnauthorizedException("Session token has expired");
       }
       return token;
@@ -136,3 +150,4 @@ export class PortalAuthService {
     }
   }
 }
+

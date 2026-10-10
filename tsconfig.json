@@ -3,7 +3,10 @@
     "target": "ES2022",
     "module": "commonjs",
     "moduleResolution": "node",
-    "lib": ["ES2022", "DOM"],
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
     "outDir": "dist",
     "strict": true,
     "esModuleInterop": true,
@@ -12,5 +15,10 @@
     "skipLibCheck": true,
     "sourceMap": true
   },
-  "include": ["apps/**/*.ts", "scripts/**/*.ts", "smoke-tests/**/*.ts"]
+  "include": [
+    "apps/**/*.ts",
+    "scripts/**/*.ts",
+    "smoke-tests/**/*.ts",
+    "tests/**/*.ts"
+  ]
 }

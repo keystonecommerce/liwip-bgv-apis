@@ -1,4 +1,5 @@
-import { Injectable } from "@nestjs/common";
+import { ProviderCallService } from "../../modules/usage/provider-call.service";
+import { Inject, Injectable } from "@nestjs/common";
 import { VerificationType } from "../../domain/verification.types";
 import { UnrecoverableError } from "bullmq";
 import type { AadhaarOvseInitializeData } from "./aadhaar-ovse.types";
@@ -21,6 +22,8 @@ export interface VerificationProvider {
 
 @Injectable()
 export class SurepassProvider implements VerificationProvider {
+  constructor(@Inject(ProviderCallService) private readonly calls: ProviderCallService) {}
+
   private readonly baseUrl = process.env.SUREPASS_BASE_URL || "https://sandbox.surepass.app";
   private readonly bearerToken = process.env.SUREPASS_BEARER_TOKEN;
   private readonly customerId = process.env.SUREPASS_CUSTOMER_ID;
@@ -29,16 +32,8 @@ export class SurepassProvider implements VerificationProvider {
   // Bound every provider call so a slow/hung socket can't pin a BullMQ worker
   // slot indefinitely. A timeout surfaces as a recoverable error → BullMQ retries.
   private async timedFetch(url: string, init: RequestInit = {}): Promise<Response> {
-    try {
-      return await fetch(url, { ...init, signal: AbortSignal.timeout(SurepassProvider.REQUEST_TIMEOUT_MS) });
-    } catch (error) {
-      if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
-        const timeout = new Error(`Surepass request timed out after ${SurepassProvider.REQUEST_TIMEOUT_MS}ms`) as Error & { code?: string };
-        timeout.code = "PROVIDER_TIMEOUT";
-        throw timeout;
-      }
-      throw error;
-    }
+    const operation = new URL(url).pathname;
+    return this.calls.dispatch("surepass", operation, () => fetch(url, { ...init, signal: AbortSignal.timeout(SurepassProvider.REQUEST_TIMEOUT_MS) }));
   }
 
   async verify(type: VerificationType, payload: Record<string, unknown>): Promise<ProviderResponse> {
@@ -138,7 +133,7 @@ export class SurepassProvider implements VerificationProvider {
         success: body?.success
       });
       const message = `Surepass ${label} returned HTTP ${raw.statusCode}: ${details}`;
-      const error = (raw.statusCode >= 400 && raw.statusCode < 500 && raw.statusCode !== 429
+      const error = (raw.statusCode !== 429
         ? new UnrecoverableError(message)
         : new Error(message)) as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
       error.code = raw.statusCode === 429 || raw.statusCode >= 500 ? "PROVIDER_UNAVAILABLE" : "PROVIDER_HTTP_ERROR";
@@ -486,3 +481,4 @@ export class SurepassProvider implements VerificationProvider {
     return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
   }
 }
+

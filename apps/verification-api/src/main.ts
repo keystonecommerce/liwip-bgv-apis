@@ -2,6 +2,7 @@ import "reflect-metadata";
 import { ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import helmet from "helmet";
+import type { Request, Response, NextFunction } from "express";
 import { AppModule } from "./app.module";
 import { loadEnv } from "./config/env";
 
@@ -13,10 +14,11 @@ async function bootstrap() {
 
   // Trust the reverse proxy so req.ip / rate-limit tracking reflect the real
   // client, not the load balancer. TRUST_PROXY_HOPS controls how many hops.
-  app.getHttpAdapter().getInstance().set("trust proxy", Number(process.env.TRUST_PROXY_HOPS || 1));
+  app.getHttpAdapter().getInstance().set("trust proxy", Number(process.env.TRUST_PROXY_HOPS || 0));
 
   // Security headers on every response.
   app.use(helmet());
+  app.use((_req: Request, res: Response, next: NextFunction) => { res.setHeader("Cache-Control", "no-store"); next(); });
 
   // Strip unknown properties from validated DTOs and coerce types.
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
@@ -43,3 +45,4 @@ async function bootstrap() {
 }
 
 bootstrap();
+

@@ -23,20 +23,20 @@ export class PlatformController {
     return this.verificationService.createApplication(
       payload,
       undefined,
-      { tenantId: client.tenantId, clientId: client.clientId }
+      { tenantId: client.tenantId, clientId: client.clientId, apiKeyId: client.apiKeyId }
     );
   }
 
   @Get("applications/:id/verifications")
   @RequireScopes("applications:read")
   getApplication(@Param("id") id: string, @CurrentClient() client: ClientContext) {
-    return this.verificationService.getApplicationDetails(id, { tenantId: client.tenantId, clientId: client.clientId });
+    return this.verificationService.getApplicationDetails(id, { tenantId: client.tenantId, clientId: client.clientId, apiKeyId: client.apiKeyId });
   }
 
   @Post("verifications/:id/retry")
   @RequireScopes("verifications:retry")
   retryVerification(@Param("id") id: string, @CurrentClient() client: ClientContext) {
-    return this.verificationService.retryVerification(id, { tenantId: client.tenantId, clientId: client.clientId });
+    return this.verificationService.retryVerification(id, { tenantId: client.tenantId, clientId: client.clientId, apiKeyId: client.apiKeyId });
   }
 
   @Post("verifications/:id/decision")
@@ -49,7 +49,8 @@ export class PlatformController {
     return this.verificationService.reviewVerification(
       id,
       payload,
-      { tenantId: client.tenantId, clientId: client.clientId }
+      { tenantId: client.tenantId, clientId: client.clientId, apiKeyId: client.apiKeyId }
     );
   }
 }
+

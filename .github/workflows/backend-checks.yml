@@ -1,0 +1,43 @@
+name: Backend checks
+on:
+  pull_request:
+  push:
+    branches: [main, 'feat/**', 'codex/**']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: bgv_test
+          POSTGRES_PASSWORD: local_test_only
+          POSTGRES_DB: bgv_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U bgv_test -d bgv_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://bgv_test:local_test_only@127.0.0.1:5432/bgv_test
+      TEST_DATABASE_URL: postgresql://bgv_test:local_test_only@127.0.0.1:5432/bgv_test
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run db:generate
+      - run: npm run test:unit
+      - run: node --test tools/surepass-mock/server.test.cjs
+      - run: npm run test:e2e

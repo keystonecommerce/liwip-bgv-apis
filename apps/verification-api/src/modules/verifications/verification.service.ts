@@ -1,6 +1,5 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { ApplicationOwner, ApplicationSchema, PackageCheckRule, SensitiveVerificationInputs, VerificationType } from "../../domain/verification.types";
-import { UsageQueue } from "../usage/usage.queue";
 import { VerificationQueue } from "./verification.queue";
 import { VerificationStore } from "./verification.repository";
 
@@ -31,8 +30,7 @@ const checkNames: Record<VerificationType, string> = {
 export class VerificationService {
   constructor(
     @Inject(VerificationStore) private readonly store: VerificationStore,
-    @Inject(VerificationQueue) private readonly queue: VerificationQueue,
-    @Inject(UsageQueue) private readonly usage: UsageQueue
+    @Inject(VerificationQueue) private readonly queue: VerificationQueue
   ) {}
 
   async createApplication(data: ApplicationSchema, sensitiveInputs?: SensitiveVerificationInputs, requestedOwner?: ApplicationOwner) {
@@ -76,8 +74,8 @@ export class VerificationService {
       if (verification.type === "ADDRESS_MATCHING") continue;
       await this.queue.addVerificationJob({ verificationId, applicationId: application.id, type: verification.type });
     }
-    if (hasManualCheck) await this.store.recalculateApplicationStatus(application.id);
-    return this.getApplicationDetails(application.id);
+    if (hasManualCheck) await this.store.recalculateApplicationStatus(application.id, owner);
+    return this.getApplicationDetails(application.id, owner);
   }
 
   async getApplicationDetails(id: string, owner?: ApplicationOwner) {
@@ -89,8 +87,12 @@ export class VerificationService {
   async retryVerification(id: string, owner?: ApplicationOwner) {
     const verification = await this.store.getVerification(id, owner);
     if (!verification) throw new NotFoundException(`Verification ${id} not found`);
+    if (verification.status !== "FAILED") throw new BadRequestException("Only failed checks can be retried; pending/reviewed checks require case review");
+    const application = await this.store.getApplication(verification.applicationId, owner);
+    if (!application) throw new NotFoundException("Application not found");
+    if (await this.store.hasDispatchedCall(verification.id, application)) throw new BadRequestException("Previously dispatched provider work requires reconciliation; create a new check for a deliberate recheck");
     await this.queue.addVerificationJob({ verificationId: verification.id, applicationId: verification.applicationId, type: verification.type });
-    return this.getApplicationDetails(verification.applicationId);
+    return this.getApplicationDetails(verification.applicationId, owner);
   }
 
   async reviewVerification(
@@ -121,24 +123,8 @@ export class VerificationService {
       },
       failureCode: decision === "FAILED" ? "MANUAL_REVIEW_REJECTED" : undefined,
       failureReason: decision === "FAILED" ? note : undefined
-    });
-    await this.store.recalculateApplicationStatus(verification.applicationId);
-    // Meter the human-reviewed outcome. A manual/field review is real work →
-    // billable. Idempotent per verificationId, so if the provider already
-    // metered a MANUAL_REVIEW this just updates the row to the final result.
-    const application = await this.store.getApplication(verification.applicationId, owner);
-    if (application) {
-      await this.usage.record({
-        tenantId: application.tenantId,
-        clientId: application.clientId,
-        applicationId: verification.applicationId,
-        verificationId: verification.id,
-        checkType: verification.type,
-        result: decision === "VERIFIED" ? "VERIFIED" : "NEGATIVE",
-        billable: true,
-        provider: verification.provider ?? null,
-      });
-    }
+    }, owner);
+    await this.store.recalculateApplicationStatus(verification.applicationId, owner);
     return this.getApplicationDetails(verification.applicationId, owner);
   }
 
@@ -186,3 +172,4 @@ export class VerificationService {
     return false;
   }
 }
+
