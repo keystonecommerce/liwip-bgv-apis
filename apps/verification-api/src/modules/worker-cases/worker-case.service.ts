@@ -266,6 +266,12 @@ export class WorkerCaseService {
     if (kind === "FACE") {
       if (!selfie || !SELFIE_TYPES.has(selfie.mimetype) || selfie.size > 5 * 1024 * 1024) throw new BadRequestException("Take a clear photo (JPEG or PNG, up to 5 MB)");
       const photo = await this.aadhaarPhoto(application, client);
+      // Stored with the case (deleted with it) so the check can run on any instance.
+      await this.prisma.aadhaarPhoto.upsert({
+        where: { applicationId: application.id },
+        update: {},
+        create: { applicationId: application.id, bytes: photo.buffer, contentType: photo.mimetype }
+      });
       // The selfie becomes the card photo once face match passes; kept now, shown only on the card.
       await this.prisma.workerPhoto.upsert({
         where: { applicationId: application.id },

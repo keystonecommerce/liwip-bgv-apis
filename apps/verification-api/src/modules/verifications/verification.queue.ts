@@ -192,9 +192,13 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
       workerCase: application.workerCase,
       pan: pan ? { name: String(pan.full_name || pan.name || "") || undefined, dateOfBirth: isoDate(pan.dob) } : null
     };
+    let sensitive = this.store.getSensitiveInputs(application.id);
+    if (application.workerCase && (verification.type === "FACE_LIVENESS" || verification.type === "FACE_MATCH") && !(sensitive?.selfie && (verification.type === "FACE_LIVENESS" || sensitive.idCard))) {
+      sensitive = { ...sensitive, ...await this.store.workerFaceInputs(application.id) };
+    }
     const response = await providerCallContext.run({ ...owner, apiKeyId: application.apiKeyId, applicationId: application.id, verificationId: verification.id, operationKey: `verification_${verification.id}_attempt_${verification.attemptCount + 1}` }, () => this.provider.verify(
       verification.type,
-      applicationToPayload(verification.type, application.data as Record<string, any>, this.store.getSensitiveInputs(application.id), officialAddress, context)
+      applicationToPayload(verification.type, application.data as Record<string, any>, sensitive, officialAddress, context)
     ));
 
     if (response.status === "verified") {

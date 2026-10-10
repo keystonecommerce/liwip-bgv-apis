@@ -231,6 +231,22 @@ export class VerificationStore {
     this.sensitiveInputs.delete(applicationId);
   }
 
+  /**
+   * A worker's selfie and Aadhaar reference photo, from the database. Memory only holds them
+   * on the instance that took the upload; during a deploy another instance can run the job.
+   */
+  async workerFaceInputs(applicationId: string): Promise<SensitiveVerificationInputs | undefined> {
+    const [selfie, reference] = await Promise.all([
+      this.prisma.workerPhoto.findUnique({ where: { applicationId } }),
+      this.prisma.aadhaarPhoto.findUnique({ where: { applicationId } })
+    ]);
+    if (!selfie) return undefined;
+    return {
+      selfie: { buffer: Buffer.from(selfie.bytes), originalname: "selfie.jpg", mimetype: selfie.contentType },
+      ...(reference ? { idCard: { buffer: Buffer.from(reference.bytes), originalname: "aadhaar-photo.jpg", mimetype: reference.contentType } } : {})
+    };
+  }
+
   async updateVerification(id: string, patch: Partial<VerificationRecord>, owner?: ApplicationOwner): Promise<VerificationRecord> {
     const data: Prisma.VerificationUpdateInput = { updatedAt: new Date() };
     if (patch.status !== undefined) data.status = patch.status;
