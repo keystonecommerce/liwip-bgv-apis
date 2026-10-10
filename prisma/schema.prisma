@@ -30,6 +30,7 @@ model Application {
   verificationCard  VerificationCard?
   fieldTasks        FieldTask[]
   providerCalls     ProviderCall[]
+  aadhaarPhoto      AadhaarPhoto?
   initiatingKey     ApiKey?               @relation(fields: [apiKeyId, clientId], references: [id, clientId], onDelete: NoAction, map: "Application_key_owner_fkey")
 
   @@unique([id, tenantId, clientId])
@@ -406,4 +407,14 @@ model WorkerPasskey {
   lastUsedAt   DateTime?
 
   @@index([tenantId, clientId, workerPhone])
+}
+
+/// Photo from the worker's verified Aadhaar (DigiLocker), kept for face match.
+/// Encrypted at rest by RDS/KMS; deleted with the case.
+model AadhaarPhoto {
+  applicationId String      @id
+  contentType   String
+  bytes         Bytes
+  createdAt     DateTime    @default(now())
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
 }

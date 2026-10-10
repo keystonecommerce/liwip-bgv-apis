@@ -10,6 +10,9 @@ import type {
 } from "../../domain/verification.types";
 import { enabledProducts, isCheckAvailable } from "../../integrations/surepass/products";
 import { AadhaarOvseService } from "../aadhaar-ovse/aadhaar-ovse.service";
+import { DigiLockerService } from "../digilocker/digilocker.service";
+import { PrismaService } from "../../common/database/prisma.service";
+import { SurepassTransport } from "../../integrations/surepass/surepass.transport";
 import { VerificationQueue } from "../verifications/verification.queue";
 import { VerificationStore } from "../verifications/verification.repository";
 import {
@@ -42,7 +45,10 @@ export class WorkerCaseService {
   constructor(
     @Inject(VerificationStore) private readonly store: VerificationStore,
     @Inject(VerificationQueue) private readonly queue: VerificationQueue,
-    @Inject(AadhaarOvseService) private readonly aadhaar: AadhaarOvseService
+    @Inject(AadhaarOvseService) private readonly aadhaar: AadhaarOvseService,
+    @Inject(DigiLockerService) private readonly digilocker: DigiLockerService,
+    @Inject(SurepassTransport) private readonly surepass: SurepassTransport,
+    @Inject(PrismaService) private readonly prisma: PrismaService
   ) {}
 
   /** Returns the worker's case, opening a draft on first sign-in. */
@@ -147,12 +153,33 @@ export class WorkerCaseService {
     return { url: session.web_link, intentData: typeof session.intent_data === "string" ? session.intent_data : null };
   }
 
-  /** Called when the worker returns from Aadhaar. Safe to call repeatedly. */
+  /** Aadhaar through DigiLocker: a web page with mobile OTP, for when the Aadhaar app does not work. */
+  async startDigiLocker(worker: WorkerIdentity, client: ClientContext) {
+    const { application, owner } = await this.current(worker, client);
+    this.requireConsent(application);
+    if (!(await this.rowsFor(application.id, ["AADHAAR"])).length) throw new BadRequestException("Aadhaar is not one of your chosen checks");
+    if (application.data.identity?.status === "VERIFIED") throw new ConflictException("Your Aadhaar is already verified");
+    const session = await this.digilocker.initialize({ data: {
+      signup_flow: true,
+      auth_type: "web",
+      aadhaar_xml: true,
+      expiry_minutes: 10,
+      redirect_url: process.env.WORKER_DIGILOCKER_RETURN_URL || undefined,
+      prefill_options: { mobile_number: worker.phone.slice(2) }
+    } }, client);
+    await this.store.updateApplicationData(application.id, owner, (data) => ({
+      ...data, identity: { source: "DIGILOCKER", sessionId: session.client_id, status: "PENDING" }
+    }));
+    return { url: session.url };
+  }
+
+  /** Called when the worker returns from the Aadhaar app or DigiLocker. Safe to call repeatedly. */
   async completeAadhaar(worker: WorkerIdentity, client: ClientContext) {
     const { application, owner } = await this.current(worker, client);
     const identity = application.data.identity;
-    if (!identity || identity.source !== "AADHAAR_OVSE") throw new BadRequestException("Start Aadhaar verification first");
+    if (!identity) throw new BadRequestException("Start Aadhaar verification first");
     if (identity.status === "VERIFIED") return this.view(application, owner);
+    if (identity.source === "DIGILOCKER") return this.completeDigiLocker(application, owner);
     const [row] = await this.rowsFor(application.id, ["AADHAAR"]);
 
     const { status } = await this.aadhaar.status(identity.sessionId, client);
@@ -216,6 +243,52 @@ export class WorkerCaseService {
     return this.view(await this.reload(application.id, owner), owner);
   }
 
+  /** Asks DigiLocker at most every 10 seconds, then downloads the signed Aadhaar once. */
+  private async completeDigiLocker(application: ApplicationRecord, owner: ApplicationOwner) {
+    const identity = application.data.identity!;
+    if (identity.checkedAt && Date.now() - Date.parse(identity.checkedAt) < 10_000) return this.view(application, owner);
+    await this.store.updateApplicationData(application.id, owner, (data) => ({ ...data, identity: { ...identity, checkedAt: new Date().toISOString() } }));
+
+    const id = encodeURIComponent(identity.sessionId);
+    const status = (await this.surepass.request({ path: `/api/v1/digilocker/status/${id}`, method: "GET" })).body as { data?: { completed?: boolean; failed?: boolean; status?: string } } | null;
+    const [row] = await this.rowsFor(application.id, ["AADHAAR"]);
+    if (status?.data?.failed) {
+      await this.store.updateApplicationData(application.id, owner, (data) => ({ ...data, identity: { ...identity, status: "FAILED" } }));
+      if (row) await this.store.setResult(row.id, "FAILED", { failureCode: "DIGILOCKER_NOT_COMPLETED", failureReason: "DigiLocker was not completed. Try again." }, owner);
+      await this.store.recalculateApplicationStatus(application.id, owner);
+      return this.view(await this.reload(application.id, owner), owner);
+    }
+    if (!status?.data?.completed) return this.view(await this.reload(application.id, owner), owner);
+
+    const download = (await this.surepass.request({ path: `/api/v1/digilocker/download-aadhaar/${id}`, method: "GET" })).body as { data?: { aadhaar_xml_data?: Record<string, unknown> } } | null;
+    const aadhaar = download?.data?.aadhaar_xml_data ?? {};
+    const text = (key: string) => (typeof aadhaar[key] === "string" ? String(aadhaar[key]).trim() : undefined);
+    const fullName = text("full_name");
+    const dateOfBirth = isoDate(text("dob"));
+    if (!fullName || !dateOfBirth) throw new BadRequestException("DigiLocker did not return your Aadhaar name and date of birth. Try again.");
+    const photo = text("profile_image")?.replace(/^data:image\/\w+;base64,/, "");
+    if (photo) {
+      const bytes = Buffer.from(photo, "base64");
+      await this.prisma.aadhaarPhoto.upsert({
+        where: { applicationId: application.id },
+        update: { bytes, contentType: "image/jpeg" },
+        create: { applicationId: application.id, bytes, contentType: "image/jpeg" }
+      });
+    }
+    const careOf = text("care_of");
+    const fatherName = text("father_name") || fatherFromCareOf(careOf);
+    const fullAddress = text("full_address");
+    await this.store.updateApplicationData(application.id, owner, (data) => ({
+      ...data,
+      identity: { ...identity, status: "VERIFIED", fullName, dateOfBirth, gender: text("gender"), address: fullAddress, pincode: text("zip"), careOf, verifiedAt: new Date().toISOString() },
+      personal: { ...data.personal, nameAsAadhaar: fullName, dateOfBirth, gender: text("gender"), submittedAddress: fullAddress || data.personal.submittedAddress },
+      criminal: { ...data.criminal, fatherName: data.criminal?.fatherName || fatherName }
+    }));
+    if (row) await this.store.setResult(row.id, "VERIFIED", { providerRequestId: identity.sessionId, result: { source: "DIGILOCKER", nameOnAadhaar: fullName } }, owner);
+    await this.startReadyChecks(application.id, owner);
+    return this.view(await this.reload(application.id, owner), owner);
+  }
+
   /** The court search runs on its own once name, father's name and address are known. */
   private async startReadyChecks(applicationId: string, owner: ApplicationOwner) {
     const { data } = await this.reload(applicationId, owner);
@@ -234,7 +307,12 @@ export class WorkerCaseService {
   /** The Aadhaar photo is the reference image for face match. */
   private async aadhaarPhoto(application: ApplicationRecord, client: ClientContext) {
     const identity = application.data.identity;
-    if (identity?.source !== "AADHAAR_OVSE" || identity.status !== "VERIFIED") throw new BadRequestException("Verify Aadhaar first; face match uses the Aadhaar photo");
+    if (identity?.status !== "VERIFIED") throw new BadRequestException("Verify Aadhaar first; face match uses the Aadhaar photo");
+    if (identity.source === "DIGILOCKER") {
+      const stored = await this.prisma.aadhaarPhoto.findUnique({ where: { applicationId: application.id } });
+      if (!stored) throw new BadRequestException("DigiLocker did not return a photo to match against");
+      return { buffer: Buffer.from(stored.bytes), originalname: "aadhaar-photo.jpg", mimetype: stored.contentType };
+    }
     const result = await this.aadhaar.result(identity.sessionId, client);
     const base64 = String(result.profile_image || "").replace(/^data:image\/\w+;base64,/, "");
     if (!base64) throw new BadRequestException("Aadhaar did not return a photo to match against");

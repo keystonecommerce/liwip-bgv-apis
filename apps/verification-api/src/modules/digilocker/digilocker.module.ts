@@ -6,6 +6,7 @@ import { DigiLockerService } from "./digilocker.service";
 @Module({
   imports: [VerificationModule],
   controllers: [DigiLockerController],
-  providers: [DigiLockerService]
+  providers: [DigiLockerService],
+  exports: [DigiLockerService]
 })
 export class DigiLockerModule {}
