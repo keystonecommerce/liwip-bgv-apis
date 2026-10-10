@@ -6,7 +6,8 @@ import IORedis from "ioredis";
 import { SensitiveVerificationInputs, VerificationJob, VerificationType } from "../../domain/verification.types";
 import { VERIFICATION_PROVIDER, VerificationProvider } from "../../integrations/verification-provider";
 import { VerificationStore } from "./verification.repository";
-import { referenceNames } from "../../domain/name-match";
+import { isoDate } from "../../domain/dates";
+import { nameAnchors, panReferenceNames } from "../../domain/name-match";
 
 // Stable namespace for the BGV verification queue.
 const queueName = "application-verification";
@@ -21,27 +22,67 @@ function formatAddress(value: unknown): string {
     .join(", ");
 }
 
+/** Registry records already verified on the case, used as name anchors. */
+export interface MatchContext {
+  /** Opened by the worker (worker app). Partner cases keep the names the partner supplied. */
+  workerCase?: boolean;
+  /** Name and date of birth the PAN registry returned, once the PAN check passed. */
+  pan?: { name?: string; dateOfBirth?: string } | null;
+}
+
+/**
+ * Names and date of birth a document is matched against. For worker cases only registry
+ * records count (verified Aadhaar, and a verified PAN that fits it); a name the worker typed
+ * is never a reference for other documents. `official: false` sends name matches to review.
+ * `dobConfirmed` means the registry looked the document up with the anchor date of birth,
+ * so a looser name rule is safe.
+ */
+function matchInputs(data: Record<string, any>, context: MatchContext) {
+  const personal = data.personal || {};
+  if (!context.workerCase) {
+    const names = [...new Set([personal.nameAsAadhaar, personal.declaredName].filter((name) => typeof name === "string" && name.trim()))];
+    return { names, panNames: names, dateOfBirth: personal.dateOfBirth as string | undefined, official: true, dobConfirmed: false, workerCase: false };
+  }
+  const aadhaar = data.identity?.status === "VERIFIED" ? { name: data.identity.fullName, dateOfBirth: data.identity.dateOfBirth } : null;
+  const anchors = nameAnchors({ aadhaar, pan: context.pan });
+  return {
+    names: anchors.names,
+    panNames: panReferenceNames(aadhaar?.name, personal.declaredName),
+    dateOfBirth: anchors.dateOfBirth ?? (personal.dateOfBirth as string | undefined),
+    official: anchors.official,
+    dobConfirmed: anchors.official && Boolean(anchors.dateOfBirth),
+    workerCase: true
+  };
+}
+
 function applicationToPayload(
   type: VerificationType,
   data: Record<string, any>,
   sensitiveInputs?: SensitiveVerificationInputs,
-  officialAddress?: string
+  officialAddress?: string,
+  context: MatchContext = {}
 ): Record<string, unknown> {
   const personal = data.personal || {};
   const education = data.education || {};
   const vehicle = data.vehicle || {};
-  // Reference names for matching: Aadhaar name, plus the typed PAN name when it fits Aadhaar.
-  const names = referenceNames(personal, data.identity?.status === "VERIFIED" ? data.identity.fullName : undefined);
+  const match = matchInputs(data, context);
+  const names = match.names;
+  // Documents looked up by number and date of birth use the official date when there is one,
+  // never a different date typed for that document.
+  const documentDob = match.workerCase && match.dobConfirmed ? match.dateOfBirth : undefined;
+  const anchored = { official: match.official, dobConfirmed: match.dobConfirmed };
   if (type === "AADHAAR" && sensitiveInputs?.aadhaarPdf) return sensitiveInputs.aadhaarPdf as unknown as Record<string, unknown>;
   if (type === "AADHAAR") return { name: personal.nameAsAadhaar, dateOfBirth: personal.dateOfBirth, aadhaarReference: personal.aadhaarReference };
-  if (type === "PAN") return { idNumber: personal.panNumber, name: names };
-  if (type === "DRIVING_LICENSE") return { licenseNumber: personal.drivingLicenceNumber, name: names, dob: personal.drivingLicenceDob || personal.dateOfBirth };
-  if (type === "VOTER_ID") return { idNumber: personal.voterId, fullName: names, dob: personal.dateOfBirth };
+  // PAN is matched to Aadhaar (plus the typed full name when it fits Aadhaar) and its date of birth compared.
+  if (type === "PAN") return { idNumber: personal.panNumber, name: match.panNames, official: match.workerCase ? match.panNames.length > 0 : true, anchorDob: match.workerCase ? data.identity?.dateOfBirth : undefined };
+  if (type === "DRIVING_LICENSE") return { licenseNumber: personal.drivingLicenceNumber, name: names, dob: documentDob ?? (personal.drivingLicenceDob || personal.dateOfBirth), ...anchored };
+  if (type === "VOTER_ID") return { idNumber: personal.voterId, fullName: names, dob: documentDob ?? personal.dateOfBirth, ...anchored };
   if (type === "ADDRESS_MATCHING") return { address1: personal.submittedAddress, address2: officialAddress };
   if (type === "RC_FULL") return { idNumber: vehicle.registrationNumber };
-  if (type === "RC_V2") return { idNumber: vehicle.registrationNumber, name: names };
+  // The RC lookup takes no date of birth, so its owner name is always matched strictly.
+  if (type === "RC_V2") return { idNumber: vehicle.registrationNumber, name: names, official: match.official };
   if (type === "CIBIL_SCORE") return { pan: personal.panNumber, mobile: personal.phone, name: personal.nameAsAadhaar, gender: personal.gender };
-  if (type === "PASSPORT") return { fileNumber: personal.passportFileNumber, dob: personal.dateOfBirth, name: names };
+  if (type === "PASSPORT") return { fileNumber: personal.passportFileNumber, dob: documentDob ?? personal.dateOfBirth, name: names, ...anchored };
   if (type === "FACE_LIVENESS" && sensitiveInputs?.selfie) return sensitiveInputs.selfie as unknown as Record<string, unknown>;
   if (type === "FACE_MATCH" && sensitiveInputs?.selfie && sensitiveInputs?.idCard) {
     return { selfie: sensitiveInputs.selfie, idCard: sensitiveInputs.idCard } as unknown as Record<string, unknown>;
@@ -146,9 +187,14 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
     const applicationVerifications = await this.store.getVerificationsForApplication(application.id);
     const aadhaarVerification = applicationVerifications.find((item) => item.type === "AADHAAR");
     const officialAddress = formatAddress(aadhaarVerification?.result?.address || aadhaarVerification?.result?.permanent_address);
+    const pan = applicationVerifications.find((item) => item.type === "PAN" && item.status === "VERIFIED")?.result;
+    const context: MatchContext = {
+      workerCase: application.workerCase,
+      pan: pan ? { name: String(pan.full_name || pan.name || "") || undefined, dateOfBirth: isoDate(pan.dob) } : null
+    };
     const response = await providerCallContext.run({ ...owner, apiKeyId: application.apiKeyId, applicationId: application.id, verificationId: verification.id, operationKey: `verification_${verification.id}_attempt_${verification.attemptCount + 1}` }, () => this.provider.verify(
       verification.type,
-      applicationToPayload(verification.type, application.data as Record<string, any>, this.store.getSensitiveInputs(application.id), officialAddress)
+      applicationToPayload(verification.type, application.data as Record<string, any>, this.store.getSensitiveInputs(application.id), officialAddress, context)
     ));
 
     if (response.status === "verified") {

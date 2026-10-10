@@ -1,5 +1,7 @@
 import { BadRequestException } from "@nestjs/common";
 import type { ApplicationSchema, VerificationType } from "../../domain/verification.types";
+import { isoDate } from "../../domain/dates";
+export { isoDate };
 
 /** Checks a worker submits input for. FACE runs liveness and face match together. */
 export type WorkerCheckKind = "PAN" | "DRIVING_LICENSE" | "RC_V2" | "VOTER_ID" | "PASSPORT" | "EMPLOYMENT_HISTORY" | "ECOURTS_SEARCH" | "FACE";
@@ -49,16 +51,6 @@ function field(input: Record<string, unknown>, name: string, pattern: RegExp, me
   return value;
 }
 
-/** Accepts YYYY-MM-DD, DD-MM-YYYY or DD/MM/YYYY and returns YYYY-MM-DD. */
-export function isoDate(value: unknown): string | undefined {
-  const text = String(value ?? "").trim();
-  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
-  const indian = /^(\d{2})[-/](\d{2})[-/](\d{4})$/.exec(text);
-  const [year, month, day] = iso ? [iso[1], iso[2], iso[3]] : indian ? [indian[3], indian[2], indian[1]] : [];
-  if (!year) return undefined;
-  const date = new Date(`${year}-${month}-${day}T00:00:00Z`);
-  return Number.isNaN(date.getTime()) || date.getUTCDate() !== Number(day) ? undefined : `${year}-${month}-${day}`;
-}
 
 /** Validates what the worker typed and returns the change to case data. */
 export function applyCheckInput(kind: Exclude<WorkerCheckKind, "FACE">, input: Record<string, unknown>, data: ApplicationSchema): ApplicationSchema {
