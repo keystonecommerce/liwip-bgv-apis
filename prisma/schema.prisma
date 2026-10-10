@@ -386,3 +386,24 @@ model ProviderCall {
   @@index([verificationId, state])
   @@index([state, startedAt])
 }
+
+/// A worker's passkey (WebAuthn credential) for signing in without OTP.
+/// The private key never leaves the device; we keep only the public key.
+model WorkerPasskey {
+  id           String    @id
+  tenantId     String
+  clientId     String
+  /// Normalised 91XXXXXXXXXX, the same phone the worker verified by OTP.
+  workerPhone  String
+  /// Base64URL credential ID from the authenticator.
+  credentialId String    @unique
+  publicKey    Bytes
+  counter      Int       @default(0)
+  transports   Json?
+  deviceType   String?
+  backedUp     Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime?
+
+  @@index([tenantId, clientId, workerPhone])
+}
