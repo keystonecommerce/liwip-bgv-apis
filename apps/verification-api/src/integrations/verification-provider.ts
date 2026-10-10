@@ -5,6 +5,8 @@ import type { SupplementaryCheckType, CheckFiles } from "../domain/supplementary
 export const VERIFICATION_PROVIDER = Symbol("VERIFICATION_PROVIDER");
 export interface ProviderResponse { requestId?: string; status?: "verified" | "failed" | "manual_review" | "pending"; data?: Record<string, unknown> | null; }
 export interface RawProviderResponse { statusCode: number; body: Record<string, unknown> | null; }
+/** Only a definite provider rejection is a failed check. Outages, unknown outcomes and our own errors go to review, never adverse. */
+export const statusForProviderError = (code?: string): "FAILED" | "MANUAL_REVIEW" => code === "PROVIDER_HTTP_ERROR" ? "FAILED" : "MANUAL_REVIEW";
 export interface VerificationProvider {
   readonly name: string;
   verify(type: VerificationType, payload: Record<string, unknown>): Promise<ProviderResponse>;

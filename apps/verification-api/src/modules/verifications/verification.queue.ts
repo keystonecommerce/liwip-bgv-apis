@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nest
 import { Job, Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import { SensitiveVerificationInputs, VerificationJob, VerificationType } from "../../domain/verification.types";
-import { VERIFICATION_PROVIDER, VerificationProvider } from "../../integrations/verification-provider";
+import { VERIFICATION_PROVIDER, VerificationProvider, statusForProviderError } from "../../integrations/verification-provider";
 import { UsageQueue, UsageResult } from "../usage/usage.queue";
 import { VerificationStore } from "./verification.repository";
 
@@ -37,14 +37,14 @@ function applicationToPayload(
   const vehicle = data.vehicle || {};
   if (type === "AADHAAR" && sensitiveInputs?.aadhaarPdf) return sensitiveInputs.aadhaarPdf as unknown as Record<string, unknown>;
   if (type === "AADHAAR") return { name: personal.nameAsAadhaar, dateOfBirth: personal.dateOfBirth, aadhaarReference: personal.aadhaarReference };
-  if (type === "PAN") return { idNumber: personal.panNumber };
+  if (type === "PAN") return { idNumber: personal.panNumber, name: personal.nameAsAadhaar };
   if (type === "DRIVING_LICENSE") return { licenseNumber: personal.drivingLicenceNumber, name: personal.nameAsAadhaar, dob: personal.drivingLicenceDob || personal.dateOfBirth };
   if (type === "VOTER_ID") return { idNumber: personal.voterId, fullName: personal.nameAsAadhaar, dob: personal.dateOfBirth };
   if (type === "ADDRESS_MATCHING") return { address1: personal.submittedAddress, address2: officialAddress };
   if (type === "RC_FULL") return { idNumber: vehicle.registrationNumber };
   if (type === "RC_V2") return { idNumber: vehicle.registrationNumber };
   if (type === "CIBIL_SCORE") return { pan: personal.panNumber, mobile: personal.phone, name: personal.nameAsAadhaar, gender: personal.gender };
-  if (type === "PASSPORT") return { fileNumber: personal.passportFileNumber, dob: personal.dateOfBirth };
+  if (type === "PASSPORT") return { fileNumber: personal.passportFileNumber, dob: personal.dateOfBirth, name: personal.nameAsAadhaar };
   if (type === "FACE_LIVENESS" && sensitiveInputs?.selfie) return sensitiveInputs.selfie as unknown as Record<string, unknown>;
   if (type === "FACE_MATCH" && sensitiveInputs?.selfie && sensitiveInputs?.idCard) {
     return { selfie: sensitiveInputs.selfie, idCard: sensitiveInputs.idCard } as unknown as Record<string, unknown>;
@@ -208,7 +208,7 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
     const verification = await this.store.getVerification(job.data.verificationId);
     if (!verification) return;
     const providerError = error as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
-    await this.store.setResult(job.data.verificationId, providerError.code === "PROVIDER_OUTCOME_UNKNOWN" ? "MANUAL_REVIEW" : "FAILED", {
+    await this.store.setResult(job.data.verificationId, statusForProviderError(providerError.code), {
       failureCode: providerError.code || "PROVIDER_UNAVAILABLE",
       failureReason: error.message,
       failureResponse: providerError.providerResponse,

@@ -39,7 +39,7 @@ export class ApiKeyGuard implements CanActivate {
         method: request.method ?? null,
         path: request.route?.path ?? request.originalUrl ?? request.url ?? null,
         keyPrefix: keyPrefix ?? null,
-        ip: firstHeader(request.headers["x-forwarded-for"]) ?? request.ip ?? request.socket?.remoteAddress ?? null,
+        ip: request.ip ?? request.socket?.remoteAddress ?? null,
         userAgent: firstHeader(request.headers["user-agent"]) ?? null,
         message: reason,
       });

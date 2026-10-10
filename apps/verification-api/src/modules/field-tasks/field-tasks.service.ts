@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import type { FieldTask } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../common/database/prisma.service";
@@ -36,12 +36,13 @@ export class FieldTasksService {
       include: { application: true }
     });
 
-    for (const verification of pending) {
-      const data = (verification.application.data as unknown as ApplicationSchema) || undefined;
-      const workerName = data?.personal?.nameAsAadhaar?.trim() || "Worker";
-      const addressText = data?.personal?.submittedAddress?.trim() || "Address on file";
-      await this.prisma.fieldTask.create({
-        data: {
+    if (pending.length === 0) return;
+    // skipDuplicates: two agents listing at once must not both create the same task.
+    await this.prisma.fieldTask.createMany({
+      skipDuplicates: true,
+      data: pending.map((verification) => {
+        const data = (verification.application.data as unknown as ApplicationSchema) || undefined;
+        return {
           id: `ftask_${randomUUID()}`,
           tenantId: verification.application.tenantId,
           clientId: verification.application.clientId,
@@ -49,11 +50,11 @@ export class FieldTasksService {
           verificationId: verification.id,
           status: "PENDING_ASSIGNMENT",
           taskType: "ADDRESS_VERIFICATION",
-          workerName,
-          addressText
-        }
-      });
-    }
+          workerName: data?.personal?.nameAsAadhaar?.trim() || "Worker",
+          addressText: data?.personal?.submittedAddress?.trim() || "Address on file"
+        };
+      })
+    });
   }
 
   async listForAgent(agent: PortalUserContext) {
@@ -80,12 +81,15 @@ export class FieldTasksService {
 
   async accept(agent: PortalUserContext, taskId: string) {
     const task = await this.viewableTask(agent, taskId);
-    if (task.status === "ACCEPTED" || task.status === "IN_PROGRESS") return this.toDetail(task);
-    const updated = await this.prisma.fieldTask.update({
-      where: { id: task.id },
+    const mine = task.assignedToUserId === agent.userId;
+    if (mine && (task.status === "ACCEPTED" || task.status === "IN_PROGRESS")) return this.toDetail(task);
+    // Only an unassigned pool task can be taken, and only by one agent.
+    const claimed = await this.prisma.fieldTask.updateMany({
+      where: { id: task.id, status: "PENDING_ASSIGNMENT", assignedToUserId: null },
       data: { status: "ACCEPTED", assignedToUserId: agent.userId, acceptedAt: new Date(), rejectionReason: null }
     });
-    return this.toDetail(updated);
+    if (claimed.count === 0) throw new ConflictException("This task is no longer available");
+    return this.toDetail(await this.prisma.fieldTask.findUniqueOrThrow({ where: { id: task.id } }));
   }
 
   async reject(agent: PortalUserContext, taskId: string, reason: string) {
@@ -138,6 +142,15 @@ export class FieldTasksService {
       return this.toDetail(updated);
     }
 
+    const verification = await this.verifications.getVerification(task.verificationId);
+    if (verification?.status !== "MANUAL_REVIEW") throw new ConflictException("This check has already been decided");
+    // Close the task first so a double submit cannot write the result twice.
+    const closed = await this.prisma.fieldTask.updateMany({
+      where: { id: task.id, assignedToUserId: agent.userId, status: { in: ["ACCEPTED", "IN_PROGRESS"] } },
+      data: { status: "SUBMITTED", outcome, notes: notes || null, submittedAt: new Date() }
+    });
+    if (closed.count === 0) throw new ConflictException("This task was already submitted");
+
     const evidence = {
       source: "field-visit",
       outcome,
@@ -163,23 +176,18 @@ export class FieldTasksService {
     await this.verifications.recalculateApplicationStatus(task.applicationId);
 
     // Field visit completed = real work performed → billable, metered per partner.
-    const verification = await this.verifications.getVerification(task.verificationId).catch(() => null);
     await this.usage.record({
       tenantId: task.tenantId,
       clientId: task.clientId,
       applicationId: task.applicationId,
       verificationId: task.verificationId,
-      checkType: verification?.type ?? "ADDRESS_MATCHING",
+      checkType: verification.type,
       result: resolution === "VERIFIED" ? "VERIFIED" : "NEGATIVE",
       billable: true,
       provider: "FIELD_AGENT",
     });
 
-    const updated = await this.prisma.fieldTask.update({
-      where: { id: task.id },
-      data: { status: "SUBMITTED", outcome, notes: notes || null, submittedAt: new Date() }
-    });
-    return this.toDetail(updated);
+    return this.toDetail(await this.prisma.fieldTask.findUniqueOrThrow({ where: { id: task.id } }));
   }
 
   private async ownedTask(agent: PortalUserContext, taskId: string): Promise<FieldTask> {

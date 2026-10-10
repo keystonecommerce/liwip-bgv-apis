@@ -31,6 +31,32 @@ import { initializeDigiLocker } from "./apis/initialize-digi-locker";
 import { CheckFiles, SupplementaryCheckType, validateCheck } from "../../domain/supplementary-checks";
 import { checkContracts } from "./check-registry";
 
+type CheckStatus = NonNullable<ProviderResponse["status"]>;
+
+/** Order- and punctuation-insensitive, so "KUMAR RAVI" matches "Ravi Kumar." */
+function normalizeName(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.toUpperCase().replace(/[^A-Z ]/g, " ").split(/\s+/).filter(Boolean).sort().join(" ");
+}
+
+/**
+ * A successful lookup only proves the document exists. It passes when the name
+ * on record matches the worker; anything else goes to a reviewer.
+ */
+function nameStatus(expected: unknown, ...returned: unknown[]): (data: Record<string, unknown>) => CheckStatus {
+  return (data) => {
+    const want = normalizeName(expected);
+    const got = returned.map((field) => normalizeName(data[field as string])).find(Boolean);
+    return want && got === want ? "verified" : "manual_review";
+  };
+}
+
+function isPastDate(value: unknown): boolean {
+  if (typeof value !== "string" || !value) return false;
+  const date = new Date(value);
+  return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
+}
+
 @Injectable()
 export class SurepassProvider implements VerificationProvider {
   readonly name = "surepass";
@@ -48,17 +74,19 @@ export class SurepassProvider implements VerificationProvider {
       return this.toVerificationResponse(await this.verifyEaadhaar(payload as any), "e-Aadhaar");
     }
     if (type === "PAN") {
-      return this.toVerificationResponse(await this.verifyPanComprehensive({ idNumber: String(payload.idNumber) }), "PAN");
+      return this.toVerificationResponse(await this.verifyPanComprehensive({ idNumber: String(payload.idNumber) }), "PAN", false,
+        nameStatus(payload.name, "full_name", "name"));
     }
     if (type === "DRIVING_LICENSE") {
-      return this.toVerificationResponse(await this.verifyDrivingLicense({ idNumber: String(payload.licenseNumber), dob: String(payload.dob) }), "Driving Licence");
+      return this.toVerificationResponse(await this.verifyDrivingLicense({ idNumber: String(payload.licenseNumber), dob: String(payload.dob) }), "Driving Licence", false,
+        (data) => isPastDate(data.doe) ? "manual_review" : nameStatus(payload.name, "name")(data));
     }
     if (type === "VOTER_ID") {
       return this.toVerificationResponse(await this.verifyVoterId({
         idNumber: String(payload.idNumber),
         fullName: String(payload.fullName),
         dob: String(payload.dob)
-      }), "Voter ID");
+      }), "Voter ID", false, nameStatus(payload.fullName, "name", "name_on_card"));
     }
     if (type === "ADDRESS_MATCHING") {
       return this.toVerificationResponse(await this.matchAddresses({ address1: String(payload.address1), address2: String(payload.address2) }), "Address Matching", true);
@@ -78,7 +106,8 @@ export class SurepassProvider implements VerificationProvider {
       }), "CIBIL Score", false, () => "manual_review");
     }
     if (type === "PASSPORT") {
-      return this.toVerificationResponse(await this.verifyPassportDetails({ fileNumber: String(payload.fileNumber), dob: String(payload.dob) }), "Passport");
+      return this.toVerificationResponse(await this.verifyPassportDetails({ fileNumber: String(payload.fileNumber), dob: String(payload.dob) }), "Passport", false,
+        nameStatus(payload.name, "full_name", "name"));
     }
     if (type === "FACE_LIVENESS") {
       return this.toVerificationResponse(await this.verifyFaceLiveness(payload as any), "Face Liveness", false, (data) => data.live === true ? "verified" : "failed");
@@ -132,7 +161,7 @@ export class SurepassProvider implements VerificationProvider {
       const error = (effectiveStatus >= 400 && effectiveStatus < 500 && effectiveStatus !== 429
         ? new UnrecoverableError(message)
         : new Error(message)) as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
-      error.code = raw.statusCode === 429 || raw.statusCode >= 500 ? "PROVIDER_UNAVAILABLE" : "PROVIDER_HTTP_ERROR";
+      error.code = effectiveStatus === 429 || effectiveStatus >= 500 ? "PROVIDER_UNAVAILABLE" : "PROVIDER_HTTP_ERROR";
       error.providerResponse = { status_code: effectiveStatus, success: body?.success ?? false, message_code: body?.message_code ?? null };
       throw error;
     }
@@ -143,7 +172,7 @@ export class SurepassProvider implements VerificationProvider {
     }
     return {
       requestId: typeof body.data.client_id === "string" ? body.data.client_id : undefined,
-      status: resolveStatus ? resolveStatus(body.data) : addressMatch ? (body.data.match_status === true ? "verified" : body.data.match_status === false ? "failed" : "manual_review") : "verified",
+      status: resolveStatus ? resolveStatus(body.data) : addressMatch ? (body.data.match_status === true ? "verified" : body.data.match_status === false ? "failed" : "manual_review") : "manual_review",
       data: body.data
     };
   }

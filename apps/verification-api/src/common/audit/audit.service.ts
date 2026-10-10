@@ -86,7 +86,8 @@ export class AuditService {
 
   /** Read recent audit rows, newest first. Callers scope by tenant/client. */
   async list(query: AuditQuery) {
-    const limit = Math.min(Math.max(query.limit ?? 50, 1), 200);
+    const requested = Number(query.limit);
+    const limit = Number.isFinite(requested) ? Math.min(Math.max(Math.trunc(requested), 1), 200) : 50;
     return this.prisma.auditLog.findMany({
       where: {
         tenantId: query.tenantId,

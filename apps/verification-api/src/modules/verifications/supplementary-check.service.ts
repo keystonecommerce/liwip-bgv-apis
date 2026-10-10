@@ -2,14 +2,16 @@ import { BadRequestException, ConflictException, Inject, Injectable, NotFoundExc
 import { createHash } from "node:crypto";
 import { ApplicationOwner } from "../../domain/verification.types";
 import { CheckFiles, isSupplementaryCheck, supplementaryChecks, validateCheck } from "../../domain/supplementary-checks";
-import { VERIFICATION_PROVIDER, VerificationProvider } from "../../integrations/verification-provider";
+import { VERIFICATION_PROVIDER, VerificationProvider, statusForProviderError } from "../../integrations/verification-provider";
+import { UsageQueue, UsageResult } from "../usage/usage.queue";
 import { VerificationStore } from "./verification.repository";
 
 @Injectable()
 export class SupplementaryCheckService {
   constructor(
     @Inject(VerificationStore) private readonly store: VerificationStore,
-    @Inject(VERIFICATION_PROVIDER) private readonly provider: VerificationProvider
+    @Inject(VERIFICATION_PROVIDER) private readonly provider: VerificationProvider,
+    @Inject(UsageQueue) private readonly usage: UsageQueue
   ) {}
 
   list() {
@@ -40,6 +42,7 @@ export class SupplementaryCheckService {
       if (claim.verification.result?.requestFingerprint !== fingerprint) throw new ConflictException("Idempotency-Key was already used with different inputs");
       return claim.verification;
     }
+    let usage: { result: UsageResult; billable: boolean } = { result: "ERROR", billable: false };
     try {
       await this.store.recalculateApplicationStatus(applicationId);
       const response = await this.provider.executeCheck(type, input, files);
@@ -48,15 +51,18 @@ export class SupplementaryCheckService {
         providerRequestId: response.requestId,
         result: { ...(response.data || {}), requestFingerprint: fingerprint }
       });
+      usage = { result: status === "FAILED" ? "NEGATIVE" : status === "PENDING" ? "MANUAL_REVIEW" : status, billable: true };
     } catch (error) {
       const failure = error as Error & { code?: string };
       const unknown = failure.code === "PROVIDER_OUTCOME_UNKNOWN";
-      await this.store.setResult(id, unknown ? "MANUAL_REVIEW" : "FAILED", {
+      await this.store.setResult(id, statusForProviderError(failure.code), {
         result: { requestFingerprint: fingerprint }, failureCode: failure.code || "PROVIDER_ERROR",
         failureReason: unknown ? "Provider outcome unknown; review before resubmitting" : "Provider could not complete this check"
       });
     } finally {
       await this.store.recalculateApplicationStatus(applicationId);
+      await this.usage.record({ tenantId: application.tenantId, clientId: application.clientId, applicationId, verificationId: id,
+        checkType: type, provider: this.provider.name, ...usage });
     }
     return this.store.getVerification(id, owner);
   }

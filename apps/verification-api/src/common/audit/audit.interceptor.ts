@@ -43,7 +43,7 @@ export class AuditInterceptor implements NestInterceptor {
     const start = Date.now();
     const method = request.method ?? "";
     const path = request.route?.path ?? request.originalUrl ?? request.url ?? "";
-    const ip = firstHeader(request.headers["x-forwarded-for"]) ?? request.ip ?? request.socket?.remoteAddress ?? null;
+    const ip = request.ip ?? request.socket?.remoteAddress ?? null;
     const userAgent = firstHeader(request.headers["user-agent"]) ?? null;
 
     const base = {
