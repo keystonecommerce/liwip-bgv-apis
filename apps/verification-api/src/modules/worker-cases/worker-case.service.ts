@@ -110,15 +110,17 @@ export class WorkerCaseService {
 
   /**
    * Name, date of birth, father's name and address. Typed by the worker when they
-   * skip Aadhaar; with Aadhaar only the gaps (father's name, address) can be filled.
+   * did not choose Aadhaar; with Aadhaar only the gaps (father's name, address) can be filled.
    */
   async saveDetails(worker: WorkerIdentity, client: ClientContext, input: DetailsInput) {
     const { application, owner } = await this.current(worker, client);
     this.requireConsent(application);
     const fromAadhaar = application.data.identity?.status === "VERIFIED";
+    // A worker who chose Aadhaar gets name and DOB from Aadhaar; typing them cannot replace it.
+    const aadhaarChosen = (application.data.selectedChecks ?? []).includes("AADHAAR");
     await this.store.updateApplicationData(application.id, owner, (data) => {
       const personal = { ...data.personal };
-      if (!fromAadhaar) {
+      if (!fromAadhaar && !aadhaarChosen) {
         personal.nameAsAadhaar = personName(input?.fullName, "Enter your full name as on your ID");
         const dob = isoDate(input?.dateOfBirth);
         if (!dob || new Date(dob) > new Date()) throw new BadRequestException("Enter your date of birth");
@@ -183,8 +185,11 @@ export class WorkerCaseService {
   async submitCheck(worker: WorkerIdentity, client: ClientContext, kind: WorkerCheckKind, input: Record<string, unknown>, selfie?: SelfieUpload) {
     const { application, owner } = await this.current(worker, client);
     this.requireConsent(application);
+    if ((application.data.selectedChecks ?? []).includes("AADHAAR") && application.data.identity?.status !== "VERIFIED") {
+      throw new BadRequestException("Verify your Aadhaar first");
+    }
     if (!application.data.personal.nameAsAadhaar || !application.data.personal.dateOfBirth) {
-      throw new BadRequestException("Verify Aadhaar or add your name and date of birth first");
+      throw new BadRequestException("Add your name and date of birth first");
     }
     const types = CHECK_TYPES_FOR[kind];
     const rows = await this.rowsFor(application.id, types);
