@@ -1,3 +1,5 @@
+import { applicationStatusForChecks } from "../../domain/application-status";
+import { withTenantScope } from "../../common/database/tenant-prisma";
 import { Inject, Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
@@ -19,6 +21,7 @@ import {
 import { PrismaService } from "../../common/database/prisma.service";
 
 type StoredApplication = {
+  apiKeyId?: string | null;
   id: string;
   tenantId: string;
   clientId: string;
@@ -102,6 +105,7 @@ export class VerificationStore {
       await transaction.application.create({
         data: {
           id: applicationId,
+          apiKeyId: owner.apiKeyId,
           tenantId: owner.tenantId,
           clientId: owner.clientId,
           packageId: verificationPackage.id,
@@ -152,7 +156,7 @@ export class VerificationStore {
   }
 
   async getApplication(id: string, owner?: ApplicationOwner): Promise<ApplicationRecord | undefined> {
-    const application = await this.prisma.application.findFirst({
+    const application = await (owner ? withTenantScope(this.prisma, owner) : this.prisma).application.findFirst({
       where: { id, ...(owner ? { tenantId: owner.tenantId, clientId: owner.clientId } : {}) },
       include: { package: true, verificationCard: true, verifications: { select: { id: true }, orderBy: { createdAt: "asc" } } }
     });
@@ -160,7 +164,7 @@ export class VerificationStore {
   }
 
   async getVerification(id: string, owner?: ApplicationOwner): Promise<VerificationRecord | undefined> {
-    const verification = await this.prisma.verification.findFirst({
+    const verification = await (owner ? withTenantScope(this.prisma, owner) : this.prisma).verification.findFirst({
       where: { id, ...(owner ? { application: { tenantId: owner.tenantId, clientId: owner.clientId } } : {}) }
     });
     return verification ? this.mapVerification(verification) : undefined;
@@ -182,7 +186,7 @@ export class VerificationStore {
   }
 
   async getVerificationsForApplication(applicationId: string, owner?: ApplicationOwner): Promise<VerificationRecord[]> {
-    const verifications = await this.prisma.verification.findMany({
+    const verifications = await (owner ? withTenantScope(this.prisma, owner) : this.prisma).verification.findMany({
       where: { applicationId, ...(owner ? { application: { tenantId: owner.tenantId, clientId: owner.clientId } } : {}) },
       orderBy: { createdAt: "asc" }
     });
@@ -201,7 +205,7 @@ export class VerificationStore {
     this.sensitiveInputs.delete(applicationId);
   }
 
-  async updateVerification(id: string, patch: Partial<VerificationRecord>): Promise<VerificationRecord> {
+  async updateVerification(id: string, patch: Partial<VerificationRecord>, owner?: ApplicationOwner): Promise<VerificationRecord> {
     const data: Prisma.VerificationUpdateInput = { updatedAt: new Date() };
     if (patch.status !== undefined) data.status = patch.status;
     if (patch.provider !== undefined) data.provider = patch.provider;
@@ -214,74 +218,66 @@ export class VerificationStore {
     if (patch.startedAt !== undefined) data.startedAt = new Date(patch.startedAt);
     if (patch.completedAt !== undefined) data.completedAt = new Date(patch.completedAt);
 
-    const verification = await this.prisma.verification.update({ where: { id }, data });
+    const verification = await this.prisma.verification.update({ where: { id, ...(owner ? { application: { tenantId: owner.tenantId, clientId: owner.clientId } } : {}) }, data });
     return this.mapVerification(verification);
   }
 
-  async updateApplicationStatus(applicationId: string, status: ApplicationStatus): Promise<ApplicationRecord> {
+  async updateApplicationStatus(applicationId: string, status: ApplicationStatus, owner?: ApplicationOwner): Promise<ApplicationRecord> {
     const application = await this.prisma.application.update({
-      where: { id: applicationId },
+      where: { id: applicationId, ...(owner ? { tenantId: owner.tenantId, clientId: owner.clientId } : {}) },
       data: { status, updatedAt: new Date() },
       include: { package: true, verificationCard: true, verifications: { select: { id: true }, orderBy: { createdAt: "asc" } } }
     });
     return this.mapApplication(application);
   }
 
-  async recalculateApplicationStatus(applicationId: string): Promise<ApplicationRecord> {
-    const application = await this.getApplication(applicationId);
-    if (!application) throw new Error(`Application ${applicationId} not found`);
-    const checks = await this.getVerificationsForApplication(applicationId);
-    const statuses = checks.map((check) => check.status);
-    let status: ApplicationStatus = "VERIFICATION_IN_PROGRESS";
-
-    if (statuses.some((value) => value === "MANUAL_REVIEW")) status = "MANUAL_REVIEW";
-    else if (statuses.some((value) => value === "FAILED")) status = "VERIFICATION_FAILED";
-    else if (checks.length > 0 && statuses.every((value) => value === "VERIFIED")) status = "VERIFIED";
-    else if (statuses.every((value) => value === "QUEUED" || value === "PENDING")) status = "PENDING_VERIFICATION";
-
-    await this.updateApplicationStatus(applicationId, status);
-    if (status === "VERIFIED") await this.issueVerificationCard(applicationId, application.tenantId, application.clientId);
-    const updated = await this.getApplication(applicationId);
-    if (!updated) throw new Error(`Application ${applicationId} not found after status update`);
-    return updated;
-  }
-
-  private async issueVerificationCard(applicationId: string, tenantId: string, clientId: string): Promise<void> {
-    const issuedAt = new Date();
-    const expiresAt = new Date(issuedAt);
-    expiresAt.setUTCFullYear(expiresAt.getUTCFullYear() + 1);
-    const cardNumber = `LIWIP-${issuedAt.getUTCFullYear()}-${randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase()}`;
-    await this.prisma.verificationCard.upsert({
-      where: { applicationId },
-      update: {},
-      create: {
-        id: `card_${randomUUID()}`,
-        applicationId,
-        tenantId,
-        clientId,
-        cardNumber,
-        publicId: randomUUID(),
-        status: "ACTIVE",
-        issuedAt,
-        expiresAt
+  async recalculateApplicationStatus(applicationId: string, requestedOwner?: ApplicationOwner): Promise<ApplicationRecord> {
+    const existing = await this.getApplication(applicationId, requestedOwner);
+    if (!existing) throw new Error("Application not found");
+    const owner = { tenantId: existing.tenantId, clientId: existing.clientId };
+    return this.prisma.$transaction(async tx => {
+      // Serialize recalculations for this case before reading its checkpoints.
+      await tx.application.update({ where: { id: applicationId, ...owner }, data: { updatedAt: new Date() } });
+      const checks = await tx.verification.findMany({ where: { applicationId, application: owner }, select: { status: true } });
+      const status = applicationStatusForChecks(checks.map(check => check.status as VerificationStatus));
+      await tx.application.update({ where: { id: applicationId, ...owner }, data: { status } });
+      if (status === "VERIFIED") {
+        const issuedAt = new Date();
+        const expiresAt = new Date(issuedAt);
+        expiresAt.setUTCFullYear(expiresAt.getUTCFullYear() + 1);
+        await tx.verificationCard.upsert({ where: { applicationId, ...owner }, update: {}, create: {
+          id: `card_${randomUUID()}`, applicationId, ...owner,
+          cardNumber: `LIWIP-${issuedAt.getUTCFullYear()}-${randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase()}`,
+          publicId: randomUUID(), status: "ACTIVE", issuedAt, expiresAt,
+        } });
+      } else {
+        await tx.verificationCard.updateMany({ where: { applicationId, ...owner, status: "ACTIVE" }, data: { status: "SUSPENDED" } });
       }
+      const application = await tx.application.findFirstOrThrow({ where: { id: applicationId, ...owner }, include: { package: true, verificationCard: true, verifications: { select: { id: true }, orderBy: { createdAt: "asc" } } } });
+      return this.mapApplication(application);
     });
   }
 
-  async setProcessing(id: string): Promise<VerificationRecord> {
-    return this.updateVerification(id, { status: "PROCESSING", startedAt: new Date().toISOString() });
+  async claimForProcessing(id: string, owner: ApplicationOwner, expectedAttempt: number): Promise<boolean> {
+    const changed = await this.prisma.verification.updateMany({ where: { id, application: { tenantId: owner.tenantId, clientId: owner.clientId }, attemptCount: expectedAttempt, status: { in: ["QUEUED", "FAILED"] } }, data: { status: "PROCESSING", startedAt: new Date(), attemptCount: { increment: 1 } } });
+    return changed.count === 1;
+  }
+
+  async hasDispatchedCall(id: string, owner: ApplicationOwner): Promise<boolean> {
+    return Boolean(await this.prisma.providerCall.findFirst({ where: { verificationId: id, tenantId: owner.tenantId, clientId: owner.clientId, state: { in: ["SUCCESS", "UNKNOWN", "STARTED"] } }, select: { id: true } }));
   }
 
   async setResult(
     id: string,
     status: VerificationStatus,
-    patch: Partial<VerificationRecord> = {}
+    patch: Partial<VerificationRecord> = {},
+    owner?: ApplicationOwner
   ): Promise<VerificationRecord> {
     return this.updateVerification(id, {
       status,
       completedAt: new Date().toISOString(),
       ...patch
-    });
+    }, owner);
   }
 
   async listActivePackages(): Promise<VerificationPackageRecord[]> {
@@ -317,6 +313,7 @@ export class VerificationStore {
   private mapApplication(record: StoredApplication): ApplicationRecord {
     return {
       id: record.id,
+      apiKeyId: record.apiKeyId ?? undefined,
       tenantId: record.tenantId,
       clientId: record.clientId,
       packageId: record.packageId || undefined,
@@ -397,3 +394,4 @@ export class VerificationStore {
     };
   }
 }
+

@@ -1,6 +1,5 @@
 import { PrismaClient } from "@prisma/client";
-import { randomUUID } from "node:crypto";
-import { generateApiKey } from "../apps/verification-api/src/common/security/api-key.util";
+import { PartnerProvisioning } from "../apps/verification-api/src/common/security/partner-provisioning";
 
 const prisma = new PrismaClient();
 const args = new Map<string, string>();
@@ -29,40 +28,10 @@ async function main(): Promise<void> {
   const existing = await findKey();
   if (!existing) throw new Error("API key not found");
 
-  const { raw, keyHash, keyPrefix } = generateApiKey();
-  const created = await prisma.apiKey.create({
-    data: {
-      id: `api_key_${randomUUID()}`,
-      clientId: existing.clientId,
-      name: existing.name,
-      keyPrefix,
-      keyHash,
-      scopes: existing.scopes as string[],
-      expiresAt: existing.expiresAt
-    }
-  });
-  await prisma.apiKey.update({ where: { id: existing.id }, data: { isActive: false, revokedAt: new Date() } });
-
-  await prisma.auditLog.create({
-    data: {
-      id: `audit_${randomUUID()}`,
-      actorType: "ADMIN",
-      action: "apiKey.rotate",
-      outcome: "SUCCESS",
-      tenantId: existing.client.tenantId,
-      tenantSlug: existing.client.tenant.slug,
-      clientId: existing.clientId,
-      clientCode: existing.client.code,
-      apiKeyId: created.id,
-      keyPrefix,
-      resourceType: "ApiKey",
-      resourceId: created.id,
-      message: `Rotated from ${existing.keyPrefix} (revoked) via CLI`
-    }
-  });
+  const result = await new PartnerProvisioning(prisma).rotateKey(existing.id);
 
   console.log(`Rotated key for ${existing.client.tenant.slug}/${existing.client.code}.`);
-  console.log(`Old key ${existing.keyPrefix}… revoked. New key (shown once): ${raw}`);
+  console.log(`Old key ${existing.keyPrefix}… revoked. New key (shown once): ${result.rawKey}`);
 }
 
 main()
@@ -71,3 +40,4 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => prisma.$disconnect());
+

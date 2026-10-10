@@ -1,9 +1,9 @@
+import { providerCallContext } from "../usage/provider-call.context";
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { Job, Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import { SensitiveVerificationInputs, VerificationJob, VerificationType } from "../../domain/verification.types";
-import { VERIFICATION_PROVIDER, VerificationProvider, statusForProviderError } from "../../integrations/verification-provider";
-import { UsageQueue, UsageResult } from "../usage/usage.queue";
+import { VERIFICATION_PROVIDER, VerificationProvider } from "../../integrations/verification-provider";
 import { VerificationStore } from "./verification.repository";
 
 const connectionOptions = {
@@ -12,8 +12,7 @@ const connectionOptions = {
   maxRetriesPerRequest: null as null
 };
 
-// Keep this demo's jobs separate from queues used by other local projects.
-// This matters because the demo store is in-memory and belongs to one API process.
+// Stable namespace for the BGV verification queue.
 const queueName = "application-verification";
 const queuePrefix = "gig-verification-v1";
 
@@ -79,39 +78,14 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     @Inject(VerificationStore) private readonly store: VerificationStore,
-    @Inject(VERIFICATION_PROVIDER) private readonly provider: VerificationProvider,
-    @Inject(UsageQueue) private readonly usage: UsageQueue
+    @Inject(VERIFICATION_PROVIDER) private readonly provider: VerificationProvider
   ) {}
-
-  // Emit one billing/metering event for a terminal verification. Best-effort:
-  // billing must never break verification processing.
-  private async meter(
-    applicationId: string,
-    verificationId: string,
-    checkType: string,
-    result: UsageResult,
-    billable: boolean,
-    provider?: string | null
-  ): Promise<void> {
-    const application = await this.store.getApplication(applicationId).catch(() => null);
-    if (!application) return;
-    await this.usage.record({
-      tenantId: application.tenantId,
-      clientId: application.clientId,
-      applicationId,
-      verificationId,
-      checkType,
-      result,
-      billable,
-      provider: provider ?? null,
-    });
-  }
 
   // Purge the in-memory raw PII buffers (Aadhaar PDF, selfie, ID card) once no
   // check for the application is still pending, so sensitive data isn't retained
   // in the process heap (and the map can't grow unbounded).
   private async purgeSensitiveInputsIfDone(applicationId: string): Promise<void> {
-    const verifications = await this.store.getVerificationsForApplication(applicationId).catch(() => []);
+    const verifications = await this.store.getVerificationsForApplication(applicationId);
     const stillPending = verifications.some((v) => ["PENDING", "QUEUED", "PROCESSING"].includes(v.status));
     if (!stillPending) this.store.clearSensitiveInputs(applicationId);
   }
@@ -148,44 +122,45 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
   private async process(job: Job<VerificationJob>): Promise<void> {
     const verification = await this.store.getVerification(job.data.verificationId);
     const application = await this.store.getApplication(job.data.applicationId);
-    if (!verification || !application) throw new Error("Verification or application not found");
-    if (verification.status === "VERIFIED") return;
-
-    await this.store.setProcessing(verification.id);
-    await this.store.updateVerification(verification.id, { attemptCount: job.attemptsMade + 1 });
+    if (!verification || !application || verification.applicationId !== application.id || verification.type !== job.data.type) throw new Error("Verification job ownership mismatch");
+    const owner = { tenantId: application.tenantId, clientId: application.clientId };
+    if (["VERIFIED", "MANUAL_REVIEW", "PENDING"].includes(verification.status)) return;
+    if (await this.store.hasDispatchedCall(verification.id, owner)) {
+      await this.store.setResult(verification.id, "MANUAL_REVIEW", { failureCode: "PROVIDER_OUTCOME_UNKNOWN", failureReason: "A dispatched provider call requires reconciliation before retrying" }, owner);
+      await this.store.recalculateApplicationStatus(application.id, owner);
+      return;
+    }
+    if (!await this.store.claimForProcessing(verification.id, owner, verification.attemptCount)) return;
 
     const applicationVerifications = await this.store.getVerificationsForApplication(application.id);
     const aadhaarVerification = applicationVerifications.find((item) => item.type === "AADHAAR");
     const officialAddress = formatAddress(aadhaarVerification?.result?.address || aadhaarVerification?.result?.permanent_address);
-    const response = await this.provider.verify(
+    const response = await providerCallContext.run({ ...owner, apiKeyId: application.apiKeyId, applicationId: application.id, verificationId: verification.id, operationKey: `verification_${verification.id}_attempt_${verification.attemptCount + 1}` }, () => this.provider.verify(
       verification.type,
       applicationToPayload(verification.type, application.data as Record<string, any>, this.store.getSensitiveInputs(application.id), officialAddress)
-    );
+    ));
 
     if (response.status === "verified") {
-      await this.store.setResult(verification.id, "VERIFIED", { providerRequestId: response.requestId, result: response.data || {} });
+      await this.store.setResult(verification.id, "VERIFIED", { providerRequestId: response.requestId, result: response.data || {} }, owner);
       // Provider did the work and it passed → billable.
-      await this.meter(application.id, verification.id, verification.type, "VERIFIED", true, verification.provider);
       if (verification.type === "AADHAAR") await this.queueAddressMatch(application.id);
     } else if (response.status === "manual_review") {
-      await this.store.setResult(verification.id, "MANUAL_REVIEW", { providerRequestId: response.requestId, result: response.data || {} });
+      await this.store.setResult(verification.id, "MANUAL_REVIEW", { providerRequestId: response.requestId, result: response.data || {} }, owner);
       // Provider did the work; needs a human → still billable.
-      await this.meter(application.id, verification.id, verification.type, "MANUAL_REVIEW", true, verification.provider);
     } else if (response.status === "pending") {
-      await this.store.updateVerification(verification.id, { status: "PENDING", providerRequestId: response.requestId, result: response.data || undefined });
-      // Not terminal yet → no metering.
+      await this.store.updateVerification(verification.id, { status: "PENDING", providerRequestId: response.requestId, result: response.data || undefined }, owner);
+      // Provider-call accounting is already durable; verification remains pending.
     } else {
       await this.store.setResult(verification.id, "FAILED", {
         providerRequestId: response.requestId,
         result: response.data || {},
         failureCode: "VERIFICATION_FAILED",
         failureReason: "Provider returned a failed verification result"
-      });
+      }, owner);
       // Provider responded with a negative result (e.g. record not found / no
       // match). The lookup still happened → billable.
-      await this.meter(application.id, verification.id, verification.type, "NEGATIVE", true, verification.provider);
     }
-    await this.store.recalculateApplicationStatus(application.id);
+    await this.store.recalculateApplicationStatus(application.id, owner);
     await this.purgeSensitiveInputsIfDone(application.id);
   }
 
@@ -202,23 +177,22 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
 
   private async handleFailedJob(job: Job<VerificationJob> | undefined, error: Error): Promise<void> {
     if (!job) return;
-    const isUnrecoverable = error.name === "UnrecoverableError";
-    const attemptsExhausted = job.attemptsMade >= (job.opts.attempts || 1);
-    if (!isUnrecoverable && !attemptsExhausted) return;
     const verification = await this.store.getVerification(job.data.verificationId);
-    if (!verification) return;
-    const providerError = error as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
-    await this.store.setResult(job.data.verificationId, statusForProviderError(providerError.code), {
-      failureCode: providerError.code || "PROVIDER_UNAVAILABLE",
-      failureReason: error.message,
-      failureResponse: providerError.providerResponse,
-      attemptCount: job.attemptsMade
-    });
-    // Provider/system error (timeout, outage, bad input) — the lookup never
-    // completed, so this is NOT billable.
-    await this.meter(job.data.applicationId, job.data.verificationId, verification.type, "ERROR", false, verification.provider);
-    await this.store.recalculateApplicationStatus(job.data.applicationId);
-    await this.purgeSensitiveInputsIfDone(job.data.applicationId);
+    const application = await this.store.getApplication(job.data.applicationId);
+    if (!verification || !application || verification.applicationId !== application.id || verification.type !== job.data.type) return;
+    if (["VERIFIED", "MANUAL_REVIEW", "PENDING"].includes(verification.status)) return;
+    const owner = { tenantId: application.tenantId, clientId: application.clientId };
+    const uncertain = await this.store.hasDispatchedCall(verification.id, owner);
+    const providerError = error as Error & { code?: string };
+    await this.store.setResult(verification.id, uncertain ? "MANUAL_REVIEW" : "FAILED", {
+      failureCode: uncertain ? "PROVIDER_OUTCOME_UNKNOWN" : providerError.code || "PROVIDER_UNAVAILABLE",
+      failureReason: uncertain ? "Provider accounting requires reconciliation; automatic replay is blocked" : "Provider request could not complete",
+      attemptCount: Math.max(verification.attemptCount, job.attemptsMade)
+    }, owner);
+    if (uncertain || error.name === "UnrecoverableError" || job.attemptsMade >= (job.opts.attempts || 1)) {
+      await this.purgeSensitiveInputsIfDone(application.id);
+    }
+    await this.store.recalculateApplicationStatus(application.id, owner);
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -227,3 +201,4 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
     await this.connection.quit();
   }
 }
+

@@ -1,0 +1,7 @@
+{
+  "name": "liwip-surepass-mock",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Standalone local Surepass simulator; no production imports or dependencies",
+  "scripts": { "start": "node server.cjs", "test": "node --test server.test.cjs" }
+}

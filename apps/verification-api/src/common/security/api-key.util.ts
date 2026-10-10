@@ -15,6 +15,7 @@ export const ALL_SCOPES = [
   "documents:write",
   "documents:read",
   "audit:read",
+  "usage:read",
 ] as const;
 
 export type Scope = (typeof ALL_SCOPES)[number];
@@ -39,7 +40,10 @@ export function generateApiKey(): { raw: string; keyHash: string; keyPrefix: str
 /** Validate a requested scope list against the known set; throws on unknown.
  *  When none are given, defaults to the minimal least-privilege set. */
 export function normalizeScopes(input: string[] | undefined): string[] {
-  if (!input || input.length === 0) return [...DEFAULT_SCOPES];
+  if (input === undefined) return [...DEFAULT_SCOPES];
+  if (!Array.isArray(input) || input.length === 0 || input.length > ALL_SCOPES.length || input.some(s => typeof s !== "string" || !s.trim())) {
+    throw new Error("scopes must be a non-empty array of known scope names");
+  }
   const known = new Set<string>(ALL_SCOPES);
   const cleaned = input.map((s) => s.trim()).filter(Boolean);
   const unknown = cleaned.filter((s) => !known.has(s));
@@ -48,3 +52,4 @@ export function normalizeScopes(input: string[] | undefined): string[] {
   }
   return Array.from(new Set(cleaned));
 }
+

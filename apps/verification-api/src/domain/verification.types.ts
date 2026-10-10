@@ -7,6 +7,7 @@ export type PackageCheckMode = "REQUIRED" | "OPTIONAL";
 export type VerificationPackageKind = "BASE" | "ADD_ON";
 export type PackageCheckExecution = "PROVIDER" | "MANUAL";
 export interface ApplicationOwner {
+  apiKeyId?: string;
   tenantId: string;
   clientId: string;
 }
@@ -112,6 +113,7 @@ export interface VerificationRecord {
 }
 
 export interface ApplicationRecord {
+  apiKeyId?: string;
   id: string;
   tenantId: string;
   clientId: string;
@@ -161,3 +163,4 @@ export interface SensitiveVerificationInputs {
     mimetype: string;
   };
 }
+

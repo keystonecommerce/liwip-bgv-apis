@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { APP_GUARD } from "@nestjs/core";
-import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
+import { ThrottlerModule } from "@nestjs/throttler";
+import { PartnerThrottlerGuard } from "./common/security/partner-throttler.guard";
 import { AuditModule } from "./common/audit/audit.module";
 import { AuthModule } from "./common/auth/auth.module";
 import { DatabaseModule } from "./common/database/database.module";
@@ -40,6 +41,6 @@ const throttleLimit = Number(process.env.THROTTLE_LIMIT || 120);
   controllers: [HealthController],
   // Keyed on req.ip, which "trust proxy" in main.ts resolves to the real client. Keying on the
   // presented API key let anyone dodge the limit by sending random keys.
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  providers: [{ provide: APP_GUARD, useClass: PartnerThrottlerGuard }],
 })
 export class AppModule {}

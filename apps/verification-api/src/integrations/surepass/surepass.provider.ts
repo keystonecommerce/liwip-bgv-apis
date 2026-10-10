@@ -158,7 +158,7 @@ export class SurepassProvider implements VerificationProvider {
     if (raw.statusCode >= 400 || body?.success === false || (typeof body?.status_code === "number" && body.status_code >= 400)) {
       const message = `Surepass ${label} could not complete the check (HTTP ${raw.statusCode})`;
       const effectiveStatus = typeof body?.status_code === "number" ? body.status_code : raw.statusCode;
-      const error = (effectiveStatus >= 400 && effectiveStatus < 500 && effectiveStatus !== 429
+      const error = (effectiveStatus !== 429
         ? new UnrecoverableError(message)
         : new Error(message)) as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
       error.code = effectiveStatus === 429 || effectiveStatus >= 500 ? "PROVIDER_UNAVAILABLE" : "PROVIDER_HTTP_ERROR";

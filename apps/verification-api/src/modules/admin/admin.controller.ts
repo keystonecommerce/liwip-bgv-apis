@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Inject, Param, Post, Query, UseGuards } from "@nestjs/common";
 import { AdminGuard } from "../../common/auth/admin.guard";
 import { AuditOutcome, AuditService } from "../../common/audit/audit.service";
-import { UsageService } from "../usage/usage.service";
+import { parseUsageDate, UsageService } from "../usage/usage.service";
 import { AdminService, CreatePartnerInput, IssueKeyInput } from "./admin.service";
 
 /**
@@ -25,14 +25,9 @@ export class AdminController {
     @Query("tenantId") tenantId?: string,
     @Query("to") to?: string
   ) {
-    const parseDate = (value?: string): Date | undefined => {
-      if (!value) return undefined;
-      const d = new Date(value);
-      return Number.isNaN(d.getTime()) ? undefined : d;
-    };
     return this.usage.getUsage({
-      from: parseDate(from),
-      to: parseDate(to),
+      from: parseUsageDate(from),
+      to: parseUsageDate(to),
       tenantId: tenantId || undefined,
       clientId: clientId || undefined,
     });
@@ -84,3 +79,4 @@ export class AdminController {
       .then((logs) => ({ logs }));
   }
 }
+

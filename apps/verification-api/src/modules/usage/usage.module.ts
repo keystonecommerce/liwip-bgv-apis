@@ -1,13 +1,9 @@
-import { Module } from "@nestjs/common";
-import { UsageQueue } from "./usage.queue";
+import { Global, Module } from "@nestjs/common";
+import { APP_INTERCEPTOR } from "@nestjs/core";
 import { UsageService } from "./usage.service";
-
-/**
- * Metering plane: UsageQueue records billable events (used by the verification
- * worker); UsageService reads them for billing (used by the admin usage route).
- */
-@Module({
-  providers: [UsageQueue, UsageService],
-  exports: [UsageQueue, UsageService],
-})
+import { ProviderCallService } from "./provider-call.service";
+import { ProviderContextInterceptor } from "./provider-context.interceptor";
+import { UsageController } from "./usage.controller";
+@Global()
+@Module({ controllers: [UsageController], providers: [UsageService, ProviderCallService, { provide: APP_INTERCEPTOR, useClass: ProviderContextInterceptor }], exports: [UsageService, ProviderCallService] })
 export class UsageModule {}

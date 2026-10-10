@@ -180,3 +180,10 @@ npm.cmd run smoke
 - Webhooks, final reports, insufficiency/resubmission, Gig Cards and renewals are pending.
 - Private S3 document APIs are implemented; the separate worker portal still needs to replace its legacy multipart upload path with the presigned-upload flow.
 - This repository is a Sandbox prototype and is not production-ready.
+
+
+## Partner provisioning and successful API accounting
+
+See [the provisioning and billing contract](docs/PROVISIONING-AND-BILLING.md) for key lifecycle, tenant ownership, confirmed provider-call counts, reconciliation and QA/card behavior. The [standalone Surepass mock](tools/surepass-mock/README.md) runs separately from the production backend and supports local architecture testing without credits.
+
+Run `npm run test:unit`; run `npm run test:e2e` with dedicated `TEST_DATABASE_URL` and `TEST_REDIS_URL` services.
