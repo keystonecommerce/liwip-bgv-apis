@@ -21,6 +21,6 @@ import { SupplementaryCheckService } from "./supplementary-check.service";
       return provider;
     }, inject: [SurepassProvider] },
     VerificationQueue, VerificationService, SupplementaryCheckService],
-  exports: [VerificationService, VERIFICATION_PROVIDER, SurepassProvider, VerificationStore]
+  exports: [VerificationService, VERIFICATION_PROVIDER, SurepassProvider, VerificationStore, VerificationQueue]
 })
 export class VerificationModule {}

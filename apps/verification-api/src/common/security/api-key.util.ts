@@ -16,6 +16,7 @@ export const ALL_SCOPES = [
   "documents:read",
   "audit:read",
   "usage:read",
+  "worker:cases",
 ] as const;
 
 export type Scope = (typeof ALL_SCOPES)[number];

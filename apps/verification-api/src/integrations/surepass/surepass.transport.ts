@@ -1,6 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { UnrecoverableError } from "bullmq";
 import { ProviderCallService } from "../../modules/usage/provider-call.service";
+import { assertProductEnabled } from "./products";
 
 export interface SurepassRequest {
   path: string;
@@ -44,6 +45,7 @@ export class SurepassTransport {
     }
     const url = new URL(path, base);
     if (url.origin !== base.origin || !url.pathname.startsWith("/api/v1/")) throw new UnrecoverableError("Invalid provider endpoint");
+    assertProductEnabled(url.pathname);
     const headers = new Headers(init.headers);
     headers.set("authorization", `Bearer ${token}`);
     if (process.env.SUREPASS_CUSTOMER_ID) headers.set("X-Customer-Id", process.env.SUREPASS_CUSTOMER_ID);

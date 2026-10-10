@@ -16,6 +16,10 @@ model Application {
   status            String
   data              Json
   legacyTestOptions Json?                 @map("testOptions")
+  /// Set for cases a worker opens themselves after OTP (91XXXXXXXXXX).
+  workerPhone       String?
+  /// Liwip BGV Card number, assigned when the case opens and kept when the card is issued.
+  cardNumber        String?               @unique
   createdAt         DateTime              @default(now())
   updatedAt         DateTime              @updatedAt
   package           VerificationPackage?  @relation(fields: [packageId], references: [id])
@@ -31,6 +35,7 @@ model Application {
   @@unique([id, tenantId, clientId])
   @@index([tenantId, createdAt])
   @@index([clientId, createdAt])
+  @@index([clientId, workerPhone])
   @@index([packageId])
   @@index([status])
   @@index([createdAt])

@@ -36,7 +36,7 @@ function applicationToPayload(
   if (type === "VOTER_ID") return { idNumber: personal.voterId, fullName: personal.nameAsAadhaar, dob: personal.dateOfBirth };
   if (type === "ADDRESS_MATCHING") return { address1: personal.submittedAddress, address2: officialAddress };
   if (type === "RC_FULL") return { idNumber: vehicle.registrationNumber };
-  if (type === "RC_V2") return { idNumber: vehicle.registrationNumber };
+  if (type === "RC_V2") return { idNumber: vehicle.registrationNumber, name: personal.nameAsAadhaar };
   if (type === "CIBIL_SCORE") return { pan: personal.panNumber, mobile: personal.phone, name: personal.nameAsAadhaar, gender: personal.gender };
   if (type === "PASSPORT") return { fileNumber: personal.passportFileNumber, dob: personal.dateOfBirth, name: personal.nameAsAadhaar };
   if (type === "FACE_LIVENESS" && sensitiveInputs?.selfie) return sensitiveInputs.selfie as unknown as Record<string, unknown>;
@@ -120,7 +120,7 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
     if (!verification || !application || verification.applicationId !== application.id || verification.type !== job.data.type) throw new Error("Verification job ownership mismatch");
     const owner = { tenantId: application.tenantId, clientId: application.clientId };
     if (["VERIFIED", "MANUAL_REVIEW", "PENDING"].includes(verification.status)) return;
-    if (await this.store.hasDispatchedCall(verification.id, owner)) {
+    if (await this.store.hasDispatchedCall(verification.id, owner, job.data.inputAfterAttempt)) {
       await this.store.setResult(verification.id, "MANUAL_REVIEW", { failureCode: "PROVIDER_OUTCOME_UNKNOWN", failureReason: "A dispatched provider call requires reconciliation before retrying" }, owner);
       await this.store.recalculateApplicationStatus(application.id, owner);
       return;
@@ -177,7 +177,7 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
     if (!verification || !application || verification.applicationId !== application.id || verification.type !== job.data.type) return;
     if (["VERIFIED", "MANUAL_REVIEW", "PENDING"].includes(verification.status)) return;
     const owner = { tenantId: application.tenantId, clientId: application.clientId };
-    const uncertain = await this.store.hasDispatchedCall(verification.id, owner);
+    const uncertain = await this.store.hasDispatchedCall(verification.id, owner, job.data.inputAfterAttempt);
     const providerError = error as Error & { code?: string };
     await this.store.setResult(verification.id, uncertain ? "MANUAL_REVIEW" : "FAILED", {
       failureCode: uncertain ? "PROVIDER_OUTCOME_UNKNOWN" : providerError.code || "PROVIDER_UNAVAILABLE",

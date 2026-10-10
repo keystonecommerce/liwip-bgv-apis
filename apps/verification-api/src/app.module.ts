@@ -6,6 +6,7 @@ import { AuditModule } from "./common/audit/audit.module";
 import { AuthModule } from "./common/auth/auth.module";
 import { DatabaseModule } from "./common/database/database.module";
 import { AadhaarOvseModule } from "./modules/aadhaar-ovse/aadhaar-ovse.module";
+import { WorkerCaseModule } from "./modules/worker-cases/worker-case.module";
 import { AdminModule } from "./modules/admin/admin.module";
 import { DigiLockerModule } from "./modules/digilocker/digilocker.module";
 import { DocumentStorageModule } from "./modules/document-storage/document-storage.module";
@@ -37,6 +38,7 @@ const throttleLimit = Number(process.env.THROTTLE_LIMIT || 120);
     PlatformModule,
     UsageModule,
     AdminModule,
+    WorkerCaseModule,
   ],
   controllers: [HealthController],
   // Keyed on req.ip, which "trust proxy" in main.ts resolves to the real client. Keying on the
