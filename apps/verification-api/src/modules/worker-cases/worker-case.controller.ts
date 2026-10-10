@@ -6,6 +6,7 @@ import { ScopeGuard } from "../../common/auth/scope.guard";
 import { RequireScopes } from "../../common/auth/scopes";
 import { CurrentWorker, WorkerGuard } from "../../common/auth/worker.guard";
 import type { WorkerIdentity } from "../../common/auth/worker-token";
+import { LimitName, RateLimitService } from "../../common/security/rate-limit.service";
 import { isWorkerCheckKind } from "./worker-case.inputs";
 import { DetailsInput, SelfieUpload, WorkerCaseService } from "./worker-case.service";
 
@@ -17,7 +18,15 @@ import { DetailsInput, SelfieUpload, WorkerCaseService } from "./worker-case.ser
 @UseGuards(ApiKeyGuard, ScopeGuard, WorkerGuard)
 @RequireScopes("worker:cases")
 export class WorkerCaseController {
-  constructor(@Inject(WorkerCaseService) private readonly cases: WorkerCaseService) {}
+  constructor(
+    @Inject(WorkerCaseService) private readonly cases: WorkerCaseService,
+    @Inject(RateLimitService) private readonly limits: RateLimitService
+  ) {}
+
+  /** Limits are per worker: the platform's own server relays every worker. */
+  private async limit(worker: WorkerIdentity, ...names: LimitName[]) {
+    for (const name of names) await this.limits.consume(name, `${worker.tenantId}:${worker.clientId}:${worker.phone}`);
+  }
 
   @Get()
   open(@CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
@@ -25,24 +34,28 @@ export class WorkerCaseController {
   }
 
   @Put("checks")
-  selectChecks(@Body() body: { checks?: string[] }, @CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
+  async selectChecks(@Body() body: { checks?: string[] }, @CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
+    await this.limit(worker, "caseEditsPerWorker");
     return this.cases.selectChecks(worker, client, body);
   }
 
   @Put("details")
-  saveDetails(@Body() body: DetailsInput, @CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
+  async saveDetails(@Body() body: DetailsInput, @CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
+    await this.limit(worker, "caseEditsPerWorker");
     return this.cases.saveDetails(worker, client, body || {});
   }
 
   @Post("consent")
   @HttpCode(200)
-  consent(@Body() body: { textVersion?: string; items?: string[] }, @CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
+  async consent(@Body() body: { textVersion?: string; items?: string[] }, @CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
+    await this.limit(worker, "caseEditsPerWorker");
     return this.cases.consent(worker, client, body);
   }
 
   @Post("identity/aadhaar/start")
   @HttpCode(200)
-  startAadhaar(@CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
+  async startAadhaar(@CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
+    await this.limit(worker, "aadhaarPerWorker");
     return this.cases.startAadhaar(worker, client);
   }
 
@@ -55,7 +68,7 @@ export class WorkerCaseController {
   @Post("checks/:kind")
   @HttpCode(200)
   @UseInterceptors(FileInterceptor("selfie", { limits: { fileSize: 5 * 1024 * 1024, files: 1 } }))
-  submitCheck(
+  async submitCheck(
     @Param("kind") kind: string,
     @Body() body: Record<string, unknown>,
     @UploadedFile() selfie: SelfieUpload | undefined,
@@ -64,6 +77,8 @@ export class WorkerCaseController {
   ) {
     const normalised = String(kind || "").toUpperCase().replace(/-/g, "_");
     if (!isWorkerCheckKind(normalised)) throw new BadRequestException("Unknown check");
+    // Each submission is a paid provider call.
+    await this.limit(worker, "checkPerWorkerHour", "checkPerWorkerDay");
     return this.cases.submitCheck(worker, client, normalised, body || {}, selfie);
   }
 }
