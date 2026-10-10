@@ -55,6 +55,19 @@ export class WorkerCaseService {
     return this.view(application, owner);
   }
 
+  /**
+   * The worker's name as printed on Aadhaar, asked right after OTP. Used to greet
+   * them and, if they skip Aadhaar, to match their documents. A verified Aadhaar
+   * name replaces it and cannot be overwritten.
+   */
+  async saveName(worker: WorkerIdentity, client: ClientContext, fullName: unknown) {
+    const { application, owner } = await this.current(worker, client);
+    if (application.data.identity?.status === "VERIFIED") throw new ConflictException("Your name comes from Aadhaar and cannot be changed");
+    const name = personName(fullName, "Enter your full name as on your Aadhaar");
+    const updated = await this.store.updateApplicationData(application.id, owner, (data) => ({ ...data, personal: { ...data.personal, nameAsAadhaar: name } }));
+    return this.view(updated, owner);
+  }
+
   /** The worker picks which checks to run. Only while the case is a draft. */
   async selectChecks(worker: WorkerIdentity, client: ClientContext, input: { checks?: string[] }) {
     const { application, owner } = await this.current(worker, client);
@@ -128,7 +141,8 @@ export class WorkerCaseService {
     await this.store.updateApplicationData(application.id, owner, (data) => ({
       ...data, identity: { source: "AADHAAR_OVSE", sessionId: session.client_id, status: "PENDING" }
     }));
-    return { url: session.web_link };
+    // The signed request opens the official Aadhaar app directly; web_link is Surepass's hosted launcher.
+    return { url: session.web_link, intentData: typeof session.intent_data === "string" ? session.intent_data : null };
   }
 
   /** Called when the worker returns from Aadhaar. Safe to call repeatedly. */
