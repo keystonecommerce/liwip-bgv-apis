@@ -80,6 +80,23 @@ type StoredVerification = {
   updatedAt: Date;
 };
 
+const UNFINISHED = new Set(["PENDING", "QUEUED", "PROCESSING", "MANUAL_REVIEW"]);
+
+/** True once a worker's chosen checks have all finished, Aadhaar passed (if chosen) and one check passed. */
+export function workerCardReady(checks: Array<{ status: string; type: string }>): boolean {
+  if (!checks.length || checks.some((check) => UNFINISHED.has(check.status))) return false;
+  const aadhaar = checks.find((check) => check.type === "AADHAAR");
+  if (aadhaar && aadhaar.status !== "VERIFIED") return false;
+  return checks.some((check) => check.status === "VERIFIED");
+}
+
+function newCard(applicationId: string, owner: ApplicationOwner, cardNumber: string | null) {
+  const issuedAt = new Date();
+  const expiresAt = new Date(issuedAt);
+  expiresAt.setUTCFullYear(expiresAt.getUTCFullYear() + 1);
+  return { id: `card_${randomUUID()}`, applicationId, tenantId: owner.tenantId, clientId: owner.clientId, cardNumber: cardNumber ?? newCardNumber(issuedAt), publicId: randomUUID(), status: "ACTIVE", issuedAt, expiresAt };
+}
+
 /** Liwip BGV Card number. Format is a placeholder until product confirms it. */
 export const newCardNumber = (at = new Date()) => `LIWIP-${at.getUTCFullYear()}-${randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase()}`;
 
@@ -240,11 +257,16 @@ export class VerificationStore {
     const owner = { tenantId: existing.tenantId, clientId: existing.clientId };
     return this.prisma.$transaction(async tx => {
       // Serialize recalculations for this case before reading its checkpoints.
-      const { cardNumber: assignedCardNumber } = await tx.application.update({ where: { id: applicationId, ...owner }, data: { updatedAt: new Date() }, select: { cardNumber: true } });
-      const checks = await tx.verification.findMany({ where: { applicationId, application: owner }, select: { status: true } });
+      const { cardNumber: assignedCardNumber, workerPhone } = await tx.application.update({ where: { id: applicationId, ...owner }, data: { updatedAt: new Date() }, select: { cardNumber: true, workerPhone: true } });
+      const checks = await tx.verification.findMany({ where: { applicationId, application: owner }, select: { status: true, type: true } });
       const status = applicationStatusForChecks(checks.map(check => check.status as VerificationStatus));
       await tx.application.update({ where: { id: applicationId, ...owner }, data: { status } });
-      if (status === "VERIFIED") {
+      if (workerPhone) {
+        // A worker's card is released once every chosen check has finished (none running or in
+        // review), Aadhaar is verified and at least one check passed. It lists the checks that
+        // passed. Adding checks later does not take it away; it shows as updating.
+        if (workerCardReady(checks)) await tx.verificationCard.upsert({ where: { applicationId, ...owner }, update: {}, create: newCard(applicationId, owner, assignedCardNumber) });
+      } else if (status === "VERIFIED") {
         const issuedAt = new Date();
         const expiresAt = new Date(issuedAt);
         expiresAt.setUTCFullYear(expiresAt.getUTCFullYear() + 1);

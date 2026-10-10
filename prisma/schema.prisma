@@ -31,6 +31,7 @@ model Application {
   fieldTasks        FieldTask[]
   providerCalls     ProviderCall[]
   aadhaarPhoto      AadhaarPhoto?
+  workerPhoto       WorkerPhoto?
   initiatingKey     ApiKey?               @relation(fields: [apiKeyId, clientId], references: [id, clientId], onDelete: NoAction, map: "Application_key_owner_fkey")
 
   @@unique([id, tenantId, clientId])
@@ -55,6 +56,7 @@ model VerificationCard {
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
   application   Application @relation(fields: [applicationId, tenantId, clientId], references: [id, tenantId, clientId], onDelete: Cascade, map: "VerificationCard_application_owner_fkey")
+  scans         CardScan[]
 
   @@unique([applicationId, tenantId, clientId])
   @@index([tenantId, clientId, issuedAt])
@@ -417,4 +419,27 @@ model AadhaarPhoto {
   bytes         Bytes
   createdAt     DateTime    @default(now())
   application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+}
+
+/// The worker's face-matched selfie, shown on their card and verify page.
+/// Encrypted at rest by RDS/KMS; deleted with the case.
+model WorkerPhoto {
+  applicationId String      @id
+  contentType   String
+  bytes         Bytes
+  createdAt     DateTime    @default(now())
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+}
+
+/// One row per check of a card: QR from the app, the fixed (shared or printed) link, or a typed number.
+model CardScan {
+  id        String           @id
+  cardId    String
+  via       String
+  result    String
+  ipHash    String
+  scannedAt DateTime         @default(now())
+  card      VerificationCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@index([cardId, scannedAt])
 }
