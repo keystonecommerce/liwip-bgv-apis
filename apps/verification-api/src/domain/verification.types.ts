@@ -1,7 +1,7 @@
 import type { SupplementaryCheckType } from "./supplementary-checks";
 export type VerificationType = SupplementaryCheckType | "AADHAAR" | "PAN" | "DRIVING_LICENSE" | "VOTER_ID" | "ADDRESS_MATCHING" | "CURRENT_ADDRESS" | "EDUCATION" | "RC_FULL" | "RC_V2" | "CIBIL_SCORE" | "PASSPORT" | "FACE_LIVENESS" | "FACE_MATCH" | "EMPLOYMENT_HISTORY" | "CURRENT_EMPLOYMENT" | "ECOURTS_SEARCH" | "REFERENCE_CHECK" | "SKILL_CERTIFICATION";
 export type VerificationStatus = "PENDING" | "QUEUED" | "PROCESSING" | "VERIFIED" | "FAILED" | "MANUAL_REVIEW";
-export type ApplicationStatus = "PENDING_VERIFICATION" | "VERIFICATION_IN_PROGRESS" | "VERIFIED" | "VERIFICATION_FAILED" | "MANUAL_REVIEW";
+export type ApplicationStatus = "DRAFT" | "PENDING_VERIFICATION" | "VERIFICATION_IN_PROGRESS" | "VERIFIED" | "VERIFICATION_FAILED" | "MANUAL_REVIEW";
 export type FinalRecommendation = "PENDING" | "PASS" | "FAIL" | "MANUAL_REVIEW";
 export type PackageCheckMode = "REQUIRED" | "OPTIONAL";
 export type VerificationPackageKind = "BASE" | "ADD_ON";
@@ -69,6 +69,23 @@ export interface ApplicationSchema {
   };
   addressConsent?: boolean;
   biometricConsent?: boolean;
+  /** Consent rows the worker ticked, by id (case, identity, face, court, address). */
+  consentItems?: string[];
+  /** Identity the worker proved with Aadhaar. Every name-matched check compares against fullName. */
+  identity?: WorkerIdentityRecord;
+}
+
+export interface WorkerIdentityRecord {
+  source: "AADHAAR_OVSE" | "DIGILOCKER";
+  sessionId: string;
+  status: "PENDING" | "VERIFIED" | "FAILED";
+  fullName?: string;
+  dateOfBirth?: string;
+  gender?: string;
+  address?: string;
+  pincode?: string;
+  careOf?: string;
+  verifiedAt?: string;
 }
 
 export interface PackageCheckRule {
@@ -142,6 +159,8 @@ export interface VerificationJob {
   verificationId: string;
   applicationId: string;
   type: VerificationType;
+  /** Set when the worker submitted new input: calls from attempts up to this one are settled history, not an unknown outcome to reconcile. */
+  inputAfterAttempt?: number;
 }
 
 export interface SensitiveVerificationInputs {

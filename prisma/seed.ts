@@ -6,7 +6,7 @@ const prisma = new PrismaClient();
 
 const provider = (type: string) => ({ type, mode: "REQUIRED", execution: "PROVIDER" });
 const manual = (type: string) => ({ type, mode: "REQUIRED", execution: "MANUAL" });
-const developmentScopes = ["packages:read", "applications:write", "applications:read", "verifications:retry", "verifications:write", "digilocker:write", "aadhaar:write", "aadhaar:read", "otp:write", "documents:write", "documents:read"];
+const developmentScopes = ["packages:read", "applications:write", "applications:read", "verifications:retry", "verifications:write", "digilocker:write", "aadhaar:write", "aadhaar:read", "otp:write", "documents:write", "documents:read", "worker:cases"];
 
 const basicChecks = [
   provider("PAN"),
@@ -94,7 +94,7 @@ const packages = [
     checks: [
       ...basicChecks,
       provider("ECOURTS_SEARCH"),
-      provider("CURRENT_EMPLOYMENT"),
+      provider("EMPLOYMENT_HISTORY"),
       manual("REFERENCE_CHECK")
     ]
   },
@@ -112,7 +112,7 @@ const packages = [
     checks: [
       ...basicChecks,
       provider("ECOURTS_SEARCH"),
-      provider("CURRENT_EMPLOYMENT")
+      provider("EMPLOYMENT_HISTORY")
     ]
   }
 ] as const;

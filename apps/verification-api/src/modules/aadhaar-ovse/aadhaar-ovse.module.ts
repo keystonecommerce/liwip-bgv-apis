@@ -6,6 +6,7 @@ import { AadhaarOvseService } from "./aadhaar-ovse.service";
 @Module({
   imports: [VerificationModule],
   controllers: [AadhaarOvseController],
-  providers: [AadhaarOvseService]
+  providers: [AadhaarOvseService],
+  exports: [AadhaarOvseService]
 })
 export class AadhaarOvseModule {}

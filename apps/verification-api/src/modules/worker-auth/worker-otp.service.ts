@@ -13,6 +13,7 @@ import {
 import { createHash, createHmac, randomInt, timingSafeEqual } from "node:crypto";
 import IORedis from "ioredis";
 import type { ClientContext } from "../../common/auth/client-context";
+import { issueWorkerToken } from "../../common/auth/worker-token";
 import { Msg91OtpProvider } from "../../integrations/msg91/msg91-otp.provider";
 import { Msg91ProviderError } from "../../integrations/msg91/msg91.types";
 
@@ -70,7 +71,11 @@ export class WorkerOtpService implements OnModuleDestroy {
     }
 
     await this.redis.del(keys.challenge, keys.verifyAttempts, keys.cooldown);
-    return { success: true, verified: true, message: "Mobile number verified successfully." };
+    // Only a key that may open worker cases receives a worker token.
+    const session = client.scopes.includes("worker:cases")
+      ? issueWorkerToken({ tenantId: client.tenantId, clientId: client.clientId, phone: mobile })
+      : undefined;
+    return { success: true, verified: true, message: "Mobile number verified successfully.", workerToken: session?.token, workerTokenExpiresAt: session?.expiresAt };
   }
 
   async resend(phone: string, client: ClientContext) {
@@ -99,6 +104,12 @@ export class WorkerOtpService implements OnModuleDestroy {
     };
     await this.redis.set(keys.challenge, JSON.stringify(challenge), "EX", this.expirySeconds());
     await this.redis.del(keys.verifyAttempts);
+
+    // Local testing without MSG91: print the code instead of sending it. Never in production.
+    if (process.env.OTP_DEV_LOG === "true" && process.env.NODE_ENV !== "production") {
+      this.logger.warn(`OTP_DEV_LOG: OTP for ******${mobile.slice(-4)} is ${code}`);
+      return { success: true, message: "OTP sent successfully.", requestId: null, expiresInSeconds: this.expirySeconds(), resendAfterSeconds: cooldownSeconds };
+    }
 
     try {
       const result = await this.provider.sendOtp(mobile, code);

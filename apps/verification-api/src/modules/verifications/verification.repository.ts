@@ -80,6 +80,9 @@ type StoredVerification = {
   updatedAt: Date;
 };
 
+/** Liwip BGV Card number. Format is a placeholder until product confirms it. */
+export const newCardNumber = (at = new Date()) => `LIWIP-${at.getUTCFullYear()}-${randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase()}`;
+
 const asInputJson = (value: unknown): Prisma.InputJsonValue => value as Prisma.InputJsonValue;
 const asNullableJson = (value: unknown): Prisma.InputJsonValue | Prisma.NullTypes.DbNull =>
   value === undefined || value === null ? Prisma.DbNull : asInputJson(value);
@@ -237,7 +240,7 @@ export class VerificationStore {
     const owner = { tenantId: existing.tenantId, clientId: existing.clientId };
     return this.prisma.$transaction(async tx => {
       // Serialize recalculations for this case before reading its checkpoints.
-      await tx.application.update({ where: { id: applicationId, ...owner }, data: { updatedAt: new Date() } });
+      const { cardNumber: assignedCardNumber } = await tx.application.update({ where: { id: applicationId, ...owner }, data: { updatedAt: new Date() }, select: { cardNumber: true } });
       const checks = await tx.verification.findMany({ where: { applicationId, application: owner }, select: { status: true } });
       const status = applicationStatusForChecks(checks.map(check => check.status as VerificationStatus));
       await tx.application.update({ where: { id: applicationId, ...owner }, data: { status } });
@@ -247,7 +250,7 @@ export class VerificationStore {
         expiresAt.setUTCFullYear(expiresAt.getUTCFullYear() + 1);
         await tx.verificationCard.upsert({ where: { applicationId, ...owner }, update: {}, create: {
           id: `card_${randomUUID()}`, applicationId, ...owner,
-          cardNumber: `LIWIP-${issuedAt.getUTCFullYear()}-${randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase()}`,
+          cardNumber: assignedCardNumber ?? newCardNumber(issuedAt),
           publicId: randomUUID(), status: "ACTIVE", issuedAt, expiresAt,
         } });
       } else {
@@ -263,8 +266,59 @@ export class VerificationStore {
     return changed.count === 1;
   }
 
-  async hasDispatchedCall(id: string, owner: ApplicationOwner): Promise<boolean> {
-    return Boolean(await this.prisma.providerCall.findFirst({ where: { verificationId: id, tenantId: owner.tenantId, clientId: owner.clientId, state: { in: ["SUCCESS", "UNKNOWN", "STARTED"] } }, select: { id: true } }));
+  async hasDispatchedCall(id: string, owner: ApplicationOwner, afterAttempt = 0): Promise<boolean> {
+    const calls = await this.prisma.providerCall.findMany({ where: { verificationId: id, tenantId: owner.tenantId, clientId: owner.clientId, state: { in: ["SUCCESS", "UNKNOWN", "STARTED"] } }, select: { operationKey: true } });
+    // Operation keys carry the attempt (verification_<id>_attempt_<n>:...). Unparseable keys count as dispatched.
+    return calls.some(({ operationKey }) => Number(/_attempt_(\d+):/.exec(operationKey)?.[1] ?? Infinity) > afterAttempt);
+  }
+
+  async findWorkerCase(owner: ApplicationOwner, workerPhone: string): Promise<ApplicationRecord | undefined> {
+    const latest = await withTenantScope(this.prisma, owner).application.findFirst({
+      where: { tenantId: owner.tenantId, clientId: owner.clientId, workerPhone },
+      orderBy: { createdAt: "desc" },
+      select: { id: true }
+    });
+    return latest ? this.getApplication(latest.id, owner) : undefined;
+  }
+
+  /** Opens a draft case. A concurrent open for the same worker returns the existing draft. */
+  async createWorkerDraft(owner: ApplicationOwner, workerPhone: string, data: ApplicationSchema): Promise<ApplicationRecord> {
+    try {
+      const now = new Date();
+      await this.prisma.application.create({ data: {
+        id: `app_${randomUUID()}`, tenantId: owner.tenantId, clientId: owner.clientId, apiKeyId: owner.apiKeyId,
+        status: "DRAFT", workerPhone, cardNumber: newCardNumber(now), data: asInputJson(data), createdAt: now, updatedAt: now
+      } });
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") throw error;
+    }
+    const created = await this.findWorkerCase(owner, workerPhone);
+    if (!created) throw new Error("Worker case was not created");
+    return created;
+  }
+
+  /** Read-modify-write of case data, serialised per case. */
+  async updateApplicationData(id: string, owner: ApplicationOwner, mutate: (data: ApplicationSchema) => ApplicationSchema, fields: { packageId?: string; status?: ApplicationStatus } = {}): Promise<ApplicationRecord> {
+    await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ data: unknown }>>`SELECT "data" FROM "Application" WHERE "id" = ${id} AND "tenantId" = ${owner.tenantId} AND "clientId" = ${owner.clientId} FOR UPDATE`;
+      if (!rows.length) throw new Error("Application not found");
+      await tx.application.update({ where: { id, ...owner }, data: { data: asInputJson(mutate(rows[0].data as ApplicationSchema)), ...fields } });
+    });
+    const updated = await this.getApplication(id, owner);
+    if (!updated) throw new Error("Application not found");
+    return updated;
+  }
+
+  async getCardNumber(applicationId: string): Promise<string | undefined> {
+    return (await this.prisma.application.findUnique({ where: { id: applicationId }, select: { cardNumber: true } }))?.cardNumber ?? undefined;
+  }
+
+  async addVerifications(applicationId: string, rows: Array<{ type: VerificationType; status: VerificationStatus }>): Promise<void> {
+    if (!rows.length) return;
+    const provider = process.env.VERIFICATION_PROVIDER || "surepass";
+    await this.prisma.verification.createMany({ data: rows.map((row) => ({
+      id: `verification_${randomUUID()}`, applicationId, type: row.type, status: row.status, provider, attemptCount: 0
+    })) });
   }
 
   async setResult(

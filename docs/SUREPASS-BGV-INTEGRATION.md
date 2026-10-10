@@ -4,6 +4,15 @@ This implementation prioritizes public, documented contracts for worker backgrou
 
 The alignment PDF distinguishes 70 PRD checks from 72 provider products. Those are different counts. [SUREPASS-COVERAGE.md](SUREPASS-COVERAGE.md) tracks all 72 products, including partial coverage and missing documentation.
 
+## Surepass links
+
+- Console: https://console.surepass.app/ (API catalogue, credits, sandbox/production switch)
+- Sandbox docs: https://app.surepass.app/docs/kyc (login required)
+- Sandbox API base URL: `https://sandbox.surepass.app`
+- Status: https://status.surepass.app/
+
+Enabled products are listed in `integrations/surepass/products.ts` by their console "API value" slug. Override per environment with `SUREPASS_ENABLED_PRODUCTS`.
+
 ## Architecture
 
 - `integrations/verification-provider.ts` defines the provider contract and `VERIFICATION_PROVIDER` injection token. Queues, controllers and application services depend on that contract.

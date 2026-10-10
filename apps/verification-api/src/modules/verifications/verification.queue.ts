@@ -125,7 +125,7 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
     if (!verification || !application || verification.applicationId !== application.id || verification.type !== job.data.type) throw new Error("Verification job ownership mismatch");
     const owner = { tenantId: application.tenantId, clientId: application.clientId };
     if (["VERIFIED", "MANUAL_REVIEW", "PENDING"].includes(verification.status)) return;
-    if (await this.store.hasDispatchedCall(verification.id, owner)) {
+    if (await this.store.hasDispatchedCall(verification.id, owner, job.data.inputAfterAttempt)) {
       await this.store.setResult(verification.id, "MANUAL_REVIEW", { failureCode: "PROVIDER_OUTCOME_UNKNOWN", failureReason: "A dispatched provider call requires reconciliation before retrying" }, owner);
       await this.store.recalculateApplicationStatus(application.id, owner);
       return;
@@ -182,7 +182,7 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
     if (!verification || !application || verification.applicationId !== application.id || verification.type !== job.data.type) return;
     if (["VERIFIED", "MANUAL_REVIEW", "PENDING"].includes(verification.status)) return;
     const owner = { tenantId: application.tenantId, clientId: application.clientId };
-    const uncertain = await this.store.hasDispatchedCall(verification.id, owner);
+    const uncertain = await this.store.hasDispatchedCall(verification.id, owner, job.data.inputAfterAttempt);
     const providerError = error as Error & { code?: string };
     await this.store.setResult(verification.id, uncertain ? "MANUAL_REVIEW" : "FAILED", {
       failureCode: uncertain ? "PROVIDER_OUTCOME_UNKNOWN" : providerError.code || "PROVIDER_UNAVAILABLE",

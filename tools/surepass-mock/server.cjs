@@ -41,6 +41,12 @@ function createSurepassMock({ token = 'mock_surepass_token', port = 0, timeoutMs
         const clientId = url.searchParams.get('client_id');
         if (!sessions.has(clientId)) { json(res, 404, { success: false, status_code: 404 }); return; }
         Object.assign(body.data, { client_id: clientId, status: 'completed' });
+        // Identity claims an Aadhaar result carries. The photo is a 1x1 JPEG placeholder.
+        if (url.pathname.endsWith('/aadhaar-v4/result')) Object.assign(body.data, {
+          full_name: process.env.MOCK_NAME || 'Ravi Kumar', dob: '15-08-1994', gender: 'M', care_of: 'S/O: Suresh Kumar',
+          full_address: '12 MG Road, Indiranagar, Bengaluru, Karnataka 560038', pincode: '560038', has_image: true,
+          profile_image: '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/yQALCAABAAEBAREA/8wABgAQEAX/2gAIAQEAAD8A0s8g/9k='
+        });
       }
       json(res, 200, body);
     } catch { if (!res.headersSent) json(res, 400, { success: false, message: 'Invalid mock request' }); else res.end(); }
