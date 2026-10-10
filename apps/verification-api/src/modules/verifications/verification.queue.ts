@@ -1,3 +1,4 @@
+import { redisConnectionOptions } from "../../config/redis";
 import { providerCallContext } from "../usage/provider-call.context";
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { Job, Queue, Worker } from "bullmq";
@@ -5,12 +6,6 @@ import IORedis from "ioredis";
 import { SensitiveVerificationInputs, VerificationJob, VerificationType } from "../../domain/verification.types";
 import { VERIFICATION_PROVIDER, VerificationProvider } from "../../integrations/verification-provider";
 import { VerificationStore } from "./verification.repository";
-
-const connectionOptions = {
-  host: process.env.REDIS_HOST || "127.0.0.1",
-  port: Number(process.env.REDIS_PORT || 6380),
-  maxRetriesPerRequest: null as null
-};
 
 // Stable namespace for the BGV verification queue.
 const queueName = "application-verification";
@@ -69,7 +64,7 @@ function applicationToPayload(
 @Injectable()
 export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(VerificationQueue.name);
-  private readonly connection = new IORedis(connectionOptions);
+  private readonly connection = new IORedis(redisConnectionOptions());
   private readonly queue = new Queue<VerificationJob>(queueName, {
     connection: this.connection,
     prefix: queuePrefix

@@ -1,10 +1,11 @@
 import { HttpException, Injectable, OnModuleDestroy, ServiceUnavailableException } from "@nestjs/common";
 import IORedis from "ioredis";
+import { redisConnectionOptions } from "../../config/redis";
 import { createHash } from "node:crypto";
 /** Shared quota per authenticated organization, across replicas and rotated keys. */
 @Injectable()
 export class PartnerRateLimitService implements OnModuleDestroy {
-  private readonly redis = new IORedis({ host: process.env.REDIS_HOST || "127.0.0.1", port: Number(process.env.REDIS_PORT || 6380), maxRetriesPerRequest: 1, enableOfflineQueue: false });
+  private readonly redis = new IORedis({ ...redisConnectionOptions(), maxRetriesPerRequest: 1, enableOfflineQueue: false });
   constructor() { this.redis.on("error", () => {}); }
   async check(clientId: string): Promise<void> {
     const limit = Number(process.env.PARTNER_RATE_LIMIT || 120);

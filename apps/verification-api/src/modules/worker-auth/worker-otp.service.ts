@@ -13,20 +13,13 @@ import {
 import { createHash, createHmac, randomInt, timingSafeEqual } from "node:crypto";
 import IORedis from "ioredis";
 import type { ClientContext } from "../../common/auth/client-context";
+import { redisConnectionOptions } from "../../config/redis";
 import { Msg91OtpProvider } from "../../integrations/msg91/msg91-otp.provider";
 import { Msg91ProviderError } from "../../integrations/msg91/msg91.types";
 
 interface StoredOtpChallenge {
   digest: string;
   createdAt: number;
-}
-
-function redisConnectionOptions() {
-  return {
-    host: process.env.REDIS_HOST || "127.0.0.1",
-    port: Number(process.env.REDIS_PORT || 6380),
-    maxRetriesPerRequest: null as null
-  };
 }
 
 @Injectable()
