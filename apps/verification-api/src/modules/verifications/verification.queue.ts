@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nest
 import { Job, Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import { SensitiveVerificationInputs, VerificationJob, VerificationType } from "../../domain/verification.types";
-import { SurepassProvider } from "../../integrations/surepass/surepass.provider";
+import { VERIFICATION_PROVIDER, VerificationProvider } from "../../integrations/verification-provider";
 import { VerificationStore } from "./verification.repository";
 
 const connectionOptions = {
@@ -78,7 +78,7 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     @Inject(VerificationStore) private readonly store: VerificationStore,
-    @Inject(SurepassProvider) private readonly provider: SurepassProvider
+    @Inject(VERIFICATION_PROVIDER) private readonly provider: VerificationProvider
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -159,7 +159,7 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
     const verification = await this.store.getVerification(job.data.verificationId);
     if (!verification) return;
     const providerError = error as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
-    await this.store.setResult(job.data.verificationId, "FAILED", {
+    await this.store.setResult(job.data.verificationId, providerError.code === "PROVIDER_OUTCOME_UNKNOWN" ? "MANUAL_REVIEW" : "FAILED", {
       failureCode: providerError.code || "PROVIDER_UNAVAILABLE",
       failureReason: error.message,
       failureResponse: providerError.providerResponse,

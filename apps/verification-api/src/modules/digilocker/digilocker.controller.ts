@@ -3,7 +3,7 @@ import { ApiKeyGuard } from "../../common/auth/api-key.guard";
 import { ClientContext, CurrentClient } from "../../common/auth/client-context";
 import { ScopeGuard } from "../../common/auth/scope.guard";
 import { RequireScopes } from "../../common/auth/scopes";
-import type { DigiLockerInitializeData } from "../../integrations/surepass/digilocker.types";
+import type { DigiLockerInitializeData } from "../../integrations/document-session.types";
 import { DigiLockerService } from "./digilocker.service";
 
 @Controller("v1/digilocker")

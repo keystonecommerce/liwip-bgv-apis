@@ -96,7 +96,7 @@ export class VerificationStore {
     const now = new Date();
     const applicationId = `app_${randomUUID()}`;
     const verificationIds = types.map(() => `verification_${randomUUID()}`);
-    const provider = "surepass";
+    const provider = process.env.VERIFICATION_PROVIDER || "surepass";
 
     await this.prisma.$transaction(async (transaction) => {
       await transaction.application.create({
@@ -164,6 +164,21 @@ export class VerificationStore {
       where: { id, ...(owner ? { application: { tenantId: owner.tenantId, clientId: owner.clientId } } : {}) }
     });
     return verification ? this.mapVerification(verification) : undefined;
+  }
+
+  async createSupplementaryVerification(id: string, applicationId: string, type: VerificationType, provider: string, fingerprint: string): Promise<{ created: boolean; verification: VerificationRecord }> {
+    try {
+      const record = await this.prisma.verification.create({ data: {
+        id, applicationId, type, provider, status: "PROCESSING", attemptCount: 1,
+        startedAt: new Date(), result: { requestFingerprint: fingerprint }
+      } });
+      return { created: true, verification: this.mapVerification(record) };
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") throw error;
+      const existing = await this.prisma.verification.findUnique({ where: { id } });
+      if (!existing) throw error;
+      return { created: false, verification: this.mapVerification(existing) };
+    }
   }
 
   async getVerificationsForApplication(applicationId: string, owner?: ApplicationOwner): Promise<VerificationRecord[]> {

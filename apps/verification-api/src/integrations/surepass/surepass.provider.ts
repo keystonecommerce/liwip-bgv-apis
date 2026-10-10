@@ -1,37 +1,49 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { VerificationType } from "../../domain/verification.types";
 import { UnrecoverableError } from "bullmq";
 import type { AadhaarOvseInitializeData } from "./aadhaar-ovse.types";
 import type { DigiLockerInitializeData } from "./digilocker.types";
 
-export interface ProviderResponse {
-  requestId?: string;
-  status?: string;
-  data?: Record<string, unknown> | null;
-}
-
-export interface GstProviderResponse {
-  statusCode: number;
-  body: Record<string, unknown> | null;
-}
-
-export interface VerificationProvider {
-  verify(type: VerificationType, payload: Record<string, unknown>): Promise<ProviderResponse>;
-}
+import { SurepassTransport } from "./surepass.transport";
+import { ProviderResponse, RawProviderResponse as GstProviderResponse, VerificationProvider } from "../verification-provider";
+export type { ProviderResponse, RawProviderResponse as GstProviderResponse, VerificationProvider } from "../verification-provider";
+import { verifyDrivingLicense } from "./apis/verify-driving-license";
+import { verifyGst } from "./apis/verify-gst";
+import { verifyEaadhaar } from "./apis/verify-eaadhaar";
+import { verifyPanComprehensive } from "./apis/verify-pan-comprehensive";
+import { verifyVoterId } from "./apis/verify-voter-id";
+import { verifyRcFull } from "./apis/verify-rc-full";
+import { verifyRcV2 } from "./apis/verify-rc-v2";
+import { matchAddresses } from "./apis/match-addresses";
+import { verifyCibilScore } from "./apis/verify-cibil-score";
+import { verifyPassportDetails } from "./apis/verify-passport-details";
+import { verifyFaceLiveness } from "./apis/verify-face-liveness";
+import { verifyFaceMatch } from "./apis/verify-face-match";
+import { verifyEmploymentHistory } from "./apis/verify-employment-history";
+import { verifyCurrentEmployment } from "./apis/verify-current-employment";
+import { searchEcourts } from "./apis/search-ecourts";
+import { getEcourtIndividualDetails } from "./apis/get-ecourt-individual-details";
+import { searchEcourtByCnr } from "./apis/search-ecourt-by-cnr";
+import { initializeAadhaarOvse } from "./apis/initialize-aadhaar-ovse";
+import { getAadhaarOvseStatus } from "./apis/get-aadhaar-ovse-status";
+import { getAadhaarOvseResult } from "./apis/get-aadhaar-ovse-result";
+import { initializeDigiLocker } from "./apis/initialize-digi-locker";
+import { CheckFiles, SupplementaryCheckType, validateCheck } from "../../domain/supplementary-checks";
+import { checkContracts } from "./check-registry";
 
 @Injectable()
 export class SurepassProvider implements VerificationProvider {
-  private readonly baseUrl = process.env.SUREPASS_BASE_URL || "https://sandbox.surepass.app";
-  private readonly bearerToken = process.env.SUREPASS_BEARER_TOKEN;
-  private readonly customerId = process.env.SUREPASS_CUSTOMER_ID;
+  readonly name = "surepass";
+  constructor(@Inject(SurepassTransport) private readonly transport: SurepassTransport) {}
+
+  async executeCheck(type: SupplementaryCheckType, payload: Record<string, unknown>, files: CheckFiles = {}): Promise<ProviderResponse> {
+    validateCheck(type, payload, files);
+    const contract = checkContracts[type];
+    return this.toVerificationResponse(await this.transport.request(contract.build(payload, files)), type, false,
+      contract.status || (() => "manual_review"));
+  }
 
   async verify(type: VerificationType, payload: Record<string, unknown>): Promise<ProviderResponse> {
-    if (!this.bearerToken) {
-      const error = new Error("SUREPASS_BEARER_TOKEN is not configured") as Error & { code?: string };
-      error.code = "PROVIDER_CONFIGURATION_ERROR";
-      throw error;
-    }
-
     if (type === "AADHAAR") {
       return this.toVerificationResponse(await this.verifyEaadhaar(payload as any), "e-Aadhaar");
     }
@@ -63,7 +75,7 @@ export class SurepassProvider implements VerificationProvider {
         mobile: String(payload.mobile),
         name: String(payload.name),
         gender: String(payload.gender) as "male" | "female"
-      }), "CIBIL Score");
+      }), "CIBIL Score", false, () => "manual_review");
     }
     if (type === "PASSPORT") {
       return this.toVerificationResponse(await this.verifyPassportDetails({ fileNumber: String(payload.fileNumber), dob: String(payload.dob) }), "Passport");
@@ -97,16 +109,16 @@ export class SurepassProvider implements VerificationProvider {
         }),
         "Court Records",
         false,
-        (data) => Array.isArray(data.result) && data.result.length > 0 ? "manual_review" : "verified"
+        (data) => Array.isArray(data.result) ? (data.result.length > 0 ? "manual_review" : "verified") : "manual_review"
       );
     }
 
-    const error = new Error(`Surepass adapter does not support ${type} yet`) as Error & { code?: string };
+    const error = new UnrecoverableError(`Surepass adapter does not support ${type} yet`) as Error & { code?: string };
     error.code = "UNSUPPORTED_VERIFICATION_TYPE";
     throw error;
   }
 
-  private toVerificationResponse(raw: GstProviderResponse, label: string, addressMatch = false, resolveStatus?: (data: Record<string, unknown>) => string): ProviderResponse {
+  private toVerificationResponse(raw: GstProviderResponse, label: string, addressMatch = false, resolveStatus?: (data: Record<string, unknown>) => NonNullable<ProviderResponse["status"]>): ProviderResponse {
     const body = raw.body as {
       success?: boolean;
       data?: Record<string, unknown> | null;
@@ -114,67 +126,34 @@ export class SurepassProvider implements VerificationProvider {
       message_code?: string;
       status_code?: number;
     } | null;
-    if (raw.statusCode >= 400 || body?.success === false) {
-      const details = JSON.stringify({
-        status_code: body?.status_code || raw.statusCode,
-        message: body?.message || "verification failed",
-        message_code: body?.message_code,
-        success: body?.success
-      });
-      const message = `Surepass ${label} returned HTTP ${raw.statusCode}: ${details}`;
-      const error = (raw.statusCode >= 400 && raw.statusCode < 500 && raw.statusCode !== 429
+    if (raw.statusCode >= 400 || body?.success === false || (typeof body?.status_code === "number" && body.status_code >= 400)) {
+      const message = `Surepass ${label} could not complete the check (HTTP ${raw.statusCode})`;
+      const effectiveStatus = typeof body?.status_code === "number" ? body.status_code : raw.statusCode;
+      const error = (effectiveStatus >= 400 && effectiveStatus < 500 && effectiveStatus !== 429
         ? new UnrecoverableError(message)
         : new Error(message)) as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
       error.code = raw.statusCode === 429 || raw.statusCode >= 500 ? "PROVIDER_UNAVAILABLE" : "PROVIDER_HTTP_ERROR";
-      error.providerResponse = body;
+      error.providerResponse = { status_code: effectiveStatus, success: body?.success ?? false, message_code: body?.message_code ?? null };
       throw error;
     }
-    if (!body?.data || typeof body.data !== "object") {
-      const error = new Error(`Surepass ${label} returned a malformed response`) as Error & { code?: string };
-      error.code = "MALFORMED_PROVIDER_RESPONSE";
+    if (body?.success !== true || !body.data || typeof body.data !== "object" || Array.isArray(body.data)) {
+      const error = new UnrecoverableError(`Surepass ${label} returned an incomplete response; review before retrying`) as Error & { code?: string };
+      error.code = "PROVIDER_OUTCOME_UNKNOWN";
       throw error;
     }
     return {
       requestId: typeof body.data.client_id === "string" ? body.data.client_id : undefined,
-      status: resolveStatus ? resolveStatus(body.data) : addressMatch && body.data.match_status === false ? "failed" : "verified",
+      status: resolveStatus ? resolveStatus(body.data) : addressMatch ? (body.data.match_status === true ? "verified" : body.data.match_status === false ? "failed" : "manual_review") : "verified",
       data: body.data
     };
   }
 
   async verifyDrivingLicense(payload: { idNumber: string; dob: string }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-      authorization: `Bearer ${this.bearerToken}`
-    };
-    if (this.customerId) headers["X-Customer-Id"] = this.customerId;
-
-    const response = await fetch(`${this.baseUrl}/api/v1/driving-license/driving-license`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ id_number: payload.idNumber, dob: payload.dob })
-    });
-    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-    return { statusCode: response.status, body };
+    return verifyDrivingLicense(this.transport, payload);
   }
 
   async verifyGst(file: { buffer: Buffer; originalname: string; mimetype: string }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-
-    const form = new FormData();
-    const bytes = new Uint8Array(file.buffer.length);
-    bytes.set(file.buffer);
-    const blob = new Blob([bytes], { type: file.mimetype || "application/octet-stream" });
-    form.append("file", blob, file.originalname || "gst-certificate");
-
-    const response = await fetch(`${this.baseUrl}/api/v1/ocr/gst`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.bearerToken}` },
-      body: form
-    });
-    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-    return { statusCode: response.status, body };
+    return verifyGst(this.transport, file);
   }
 
   async verifyEaadhaar(payload: {
@@ -184,109 +163,27 @@ export class SurepassProvider implements VerificationProvider {
     fullName: string;
     yearOfBirth: string;
   }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-
-    const form = new FormData();
-    const bytes = new Uint8Array(payload.buffer.length);
-    bytes.set(payload.buffer);
-    const blob = new Blob([bytes], { type: payload.mimetype || "application/pdf" });
-    const fileField = process.env.SUREPASS_EAADHAAR_FILE_FIELD || "file";
-    form.append(fileField, blob, payload.originalname || "eaadhaar.pdf");
-    form.append("base64", payload.buffer.toString("base64"));
-    form.append("yob", payload.yearOfBirth);
-    form.append("full_name", payload.fullName);
-
-    const response = await fetch(`${this.baseUrl}/api/v1/aadhaar/upload/eaadhaar`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.bearerToken}` },
-      body: form
-    });
-    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-    return { statusCode: response.status, body };
+    return verifyEaadhaar(this.transport, payload);
   }
 
   async verifyPanComprehensive(payload: { idNumber: string; maskedAadhaarVariant?: string }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-
-    const response = await fetch(`${this.baseUrl}/api/v1/pan/pan-comprehensive`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${this.bearerToken}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({ id_number: payload.idNumber, masked_aadhaar_variant: payload.maskedAadhaarVariant || "empty" })
-    });
-    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-    return { statusCode: response.status, body };
+    return verifyPanComprehensive(this.transport, payload);
   }
 
   async verifyVoterId(payload: { idNumber: string; fullName: string; dob: string }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-
-    const headers: Record<string, string> = {
-      authorization: `Bearer ${this.bearerToken}`,
-      "content-type": "application/json"
-    };
-    if (this.customerId) headers["X-Customer-Id"] = this.customerId;
-
-    const response = await fetch(`${this.baseUrl}/api/v1/voter-id/voter-id`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        id_number: payload.idNumber,
-        additional_details: {
-          full_name: payload.fullName,
-          dob: payload.dob
-        }
-      })
-    });
-    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-    return { statusCode: response.status, body };
+    return verifyVoterId(this.transport, payload);
   }
 
   async verifyRcFull(payload: { idNumber: string }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-
-    const response = await fetch(`${this.baseUrl}/api/v1/rc/rc-full`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${this.bearerToken}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({ id_number: payload.idNumber })
-    });
-    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-    return { statusCode: response.status, body };
+    return verifyRcFull(this.transport, payload);
   }
 
   async verifyRcV2(payload: { idNumber: string; enrich?: boolean }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-
-    const response = await fetch(`${this.baseUrl}/api/v1/rc/rc-v2`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${this.bearerToken}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({ id_number: payload.idNumber, enrich: payload.enrich === true })
-    });
-    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-    return { statusCode: response.status, body };
+    return verifyRcV2(this.transport, payload);
   }
 
   async matchAddresses(payload: { address1: string; address2: string }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-
-    const response = await fetch(`${this.baseUrl}/api/v1/utils/address-matching`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${this.bearerToken}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({ address_1: payload.address1, address_2: payload.address2 })
-    });
-    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-    return { statusCode: response.status, body };
+    return matchAddresses(this.transport, payload);
   }
 
   async verifyCibilScore(payload: {
@@ -295,53 +192,15 @@ export class SurepassProvider implements VerificationProvider {
     name: string;
     gender: "male" | "female";
   }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-
-    const response = await fetch(`${this.baseUrl}/api/v1/credit-report-cibil/score`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${this.bearerToken}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        pan: payload.pan,
-        mobile: payload.mobile,
-        name: payload.name,
-        consent: "Y",
-        gender: payload.gender
-      })
-    });
-    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-    return { statusCode: response.status, body };
+    return verifyCibilScore(this.transport, payload);
   }
 
   async verifyPassportDetails(payload: { fileNumber: string; dob: string }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-
-    const response = await fetch(`${this.baseUrl}/api/v1/passport/passport/passport-details`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${this.bearerToken}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({ id_number: payload.fileNumber, dob: payload.dob })
-    });
-    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-    return { statusCode: response.status, body };
+    return verifyPassportDetails(this.transport, payload);
   }
 
   async verifyFaceLiveness(payload: { buffer: Buffer; originalname: string; mimetype: string }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const form = new FormData();
-    const bytes = new Uint8Array(payload.buffer.length);
-    bytes.set(payload.buffer);
-    form.append("file", new Blob([bytes], { type: payload.mimetype || "image/jpeg" }), payload.originalname || "selfie.jpg");
-    const response = await fetch(`${this.baseUrl}/api/v1/face/face-liveness`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.bearerToken}` },
-      body: form
-    });
-    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+    return verifyFaceLiveness(this.transport, payload);
   }
 
   async verifyFaceMatch(payload: {
@@ -349,32 +208,11 @@ export class SurepassProvider implements VerificationProvider {
     idCard: { buffer: Buffer; originalname: string; mimetype: string };
     selfie2?: { buffer: Buffer; originalname: string; mimetype: string };
   }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const form = new FormData();
-    const appendFile = (name: string, file: { buffer: Buffer; originalname: string; mimetype: string }) => {
-      const bytes = new Uint8Array(file.buffer.length);
-      bytes.set(file.buffer);
-      form.append(name, new Blob([bytes], { type: file.mimetype || "image/jpeg" }), file.originalname || `${name}.jpg`);
-    };
-    appendFile("selfie", payload.selfie);
-    appendFile("id_card", payload.idCard);
-    if (payload.selfie2) appendFile("selfie_2", payload.selfie2);
-    const response = await fetch(`${this.baseUrl}/api/v1/face/face-match`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.bearerToken}` },
-      body: form
-    });
-    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+    return verifyFaceMatch(this.transport, payload);
   }
 
   async verifyEmploymentHistory(payload: { uan: string }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const response = await fetch(`${this.baseUrl}/api/v1/income/employment-history-uan-v2`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
-      body: JSON.stringify({ id_number: payload.uan })
-    });
-    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+    return verifyEmploymentHistory(this.transport, payload);
   }
 
   async verifyCurrentEmployment(payload: {
@@ -384,89 +222,34 @@ export class SurepassProvider implements VerificationProvider {
     employerName?: string;
     employeeName?: string;
   }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const body = {
-      ...(payload.panNumber ? { pan_number: payload.panNumber } : {}),
-      ...(payload.mobileNumber ? { mobile_number: payload.mobileNumber } : {}),
-      ...(payload.uanNumber ? { uan_number: payload.uanNumber } : {}),
-      ...(payload.employerName ? { employer_name: payload.employerName } : {}),
-      ...(payload.employeeName ? { employee_name: payload.employeeName } : {})
-    };
-    const response = await fetch(`${this.baseUrl}/api/v1/employment/current-employment-pan-mobile`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+    return verifyCurrentEmployment(this.transport, payload);
   }
 
   async searchEcourts(payload: { name: string; fatherName: string; address: string; year?: string; state?: string }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const response = await fetch(`${this.baseUrl}/api/v1/ecourts/ecourt-search-v2`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
-      body: JSON.stringify({ name: payload.name, father_name: payload.fatherName, address: payload.address, year: payload.year || "", state: payload.state || "" })
-    });
-    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+    return searchEcourts(this.transport, payload);
   }
 
   async getEcourtIndividualDetails(payload: { clientId: string }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const response = await fetch(`${this.baseUrl}/api/v1/ecourts/ecourt-individual-court-details`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
-      body: JSON.stringify({ client_id: payload.clientId })
-    });
-    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+    return getEcourtIndividualDetails(this.transport, payload);
   }
 
   async searchEcourtByCnr(payload: { cnrNumber: string; courtType: "district_court" | "high_court" }): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const response = await fetch(`${this.baseUrl}/api/v1/ecourts/ecourt-cnr-search-adv`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
-      body: JSON.stringify({ cnr_number: payload.cnrNumber, court_type: payload.courtType })
-    });
-    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+    return searchEcourtByCnr(this.transport, payload);
   }
 
   async initializeAadhaarOvse(payload: AadhaarOvseInitializeData): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const response = await fetch(`${this.baseUrl}/api/v1/aadhaar-v4/initialize`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+    return initializeAadhaarOvse(this.transport, payload);
   }
 
   async getAadhaarOvseStatus(clientId: string): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const query = new URLSearchParams({ client_id: clientId });
-    const response = await fetch(`${this.baseUrl}/api/v1/aadhaar-v4/status?${query.toString()}`, {
-      method: "GET",
-      headers: { authorization: `Bearer ${this.bearerToken}` }
-    });
-    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+    return getAadhaarOvseStatus(this.transport, clientId);
   }
 
   async getAadhaarOvseResult(clientId: string): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const query = new URLSearchParams({ client_id: clientId });
-    const response = await fetch(`${this.baseUrl}/api/v1/aadhaar-v4/result?${query.toString()}`, {
-      method: "GET",
-      headers: { authorization: `Bearer ${this.bearerToken}` }
-    });
-    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+    return getAadhaarOvseResult(this.transport, clientId);
   }
 
   async initializeDigiLocker(payload: DigiLockerInitializeData): Promise<GstProviderResponse> {
-    if (!this.bearerToken) throw new Error("SUREPASS_BEARER_TOKEN is not configured");
-    const response = await fetch(`${this.baseUrl}/api/v1/digilocker/initialize`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.bearerToken}`, "content-type": "application/json" },
-      body: JSON.stringify({ data: payload })
-    });
-    return { statusCode: response.status, body: await response.json().catch(() => null) as Record<string, unknown> | null };
+    return initializeDigiLocker(this.transport, payload);
   }
 }

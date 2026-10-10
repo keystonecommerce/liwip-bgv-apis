@@ -122,6 +122,8 @@ export function buildWorkerApplication(
       textVersion: "worker-verification-v1",
       grantedAt: new Date().toISOString()
     },
+    addressConsent: payload.address_consent === "Y",
+    biometricConsent: payload.biometric_consent === "Y",
     ...(payload.credit_consent === "Y" ? {
       creditConsent: {
         granted: true,

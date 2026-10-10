@@ -10,8 +10,8 @@ import type {
   AadhaarOvseResultProviderResponse,
   AadhaarOvseStatus,
   AadhaarOvseStatusProviderResponse
-} from "../../integrations/surepass/aadhaar-ovse.types";
-import { SurepassProvider } from "../../integrations/surepass/surepass.provider";
+} from "../../integrations/aadhaar-session.types";
+import { VERIFICATION_PROVIDER, VerificationProvider } from "../../integrations/verification-provider";
 
 const DEFAULT_CLAIMS = ["full_name", "dob", "gender", "profile_image", "care_of", "address", "pincode", "age_above_18", "mobile", "email"];
 const OVSE_STATUSES = new Set<AadhaarOvseStatus>(["pending", "callback_received", "completed", "failed", "expired"]);
@@ -20,7 +20,7 @@ const TERMINAL_STATUSES = new Set<AadhaarOvseStatus>(["completed", "failed", "ex
 @Injectable()
 export class AadhaarOvseService {
   constructor(
-    @Inject(SurepassProvider) private readonly provider: SurepassProvider,
+    @Inject(VERIFICATION_PROVIDER) private readonly provider: VerificationProvider,
     @Inject(PrismaService) private readonly prisma: PrismaService
   ) {}
 

@@ -43,7 +43,7 @@ async function main(): Promise<void> {
       name: args.get("key-name") || "Platform API key",
       keyPrefix: rawApiKey.slice(0, 10),
       keyHash,
-      scopes: ["packages:read", "applications:write", "applications:read", "verifications:retry", "digilocker:write", "aadhaar:write", "aadhaar:read", "otp:write", "documents:write", "documents:read"]
+      scopes: ["packages:read", "applications:write", "applications:read", "verifications:retry", "verifications:write", "digilocker:write", "aadhaar:write", "aadhaar:read", "otp:write", "documents:write", "documents:read"]
     }
   });
 
