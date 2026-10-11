@@ -15,6 +15,8 @@ export interface ApplicationOwner {
 export interface ApplicationSchema {
   /** Where a check's input came from, when not typed by the worker (e.g. a signed DigiLocker document). */
   documentSources?: Partial<Record<string, { source: "DIGILOCKER"; signedBy?: string; signedAt?: string }>>;
+  /** A DigiLocker session opened after Aadhaar, only to share documents for added checks. */
+  digilockerDocuments?: { sessionId: string; status: "PENDING" | "COMPLETED" | "FAILED"; startedAt: string; checkedAt?: string };
   packageCode?: string;
   packageVersion?: number;
   personal: {

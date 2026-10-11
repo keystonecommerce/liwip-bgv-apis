@@ -1,22 +1,22 @@
-import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import type { ClientContext } from "../../common/auth/client-context";
 import type { WorkerIdentity } from "../../common/auth/worker-token";
 import type {
   ApplicationOwner,
   ApplicationRecord,
   ApplicationSchema,
-  VerificationRecord,
   VerificationType
 } from "../../domain/verification.types";
 import { enabledProducts, isCheckAvailable } from "../../integrations/surepass/products";
 import { AadhaarOvseService } from "../aadhaar-ovse/aadhaar-ovse.service";
 import { DigiLockerService } from "../digilocker/digilocker.service";
 import { PrismaService } from "../../common/database/prisma.service";
-import { SurepassTransport } from "../../integrations/surepass/surepass.transport";
 import { VerificationQueue } from "../verifications/verification.queue";
 import { VerificationStore } from "../verifications/verification.repository";
-import { DigiLockerDocumentReader } from "./digilocker/document-reader.service";
-import { DIGILOCKER_DOCUMENTS, type DigiLockerDocType, type SharedDocument } from "./digilocker/documents";
+import { latestRows, queueRow, startReadyChecks } from "./case-rows";
+import { DigiLockerCompletionQueue } from "./digilocker/completion.queue";
+import { DigiLockerCompletion, digiLockerPending } from "./digilocker/completion.service";
+import { DIGILOCKER_DOCUMENTS } from "./digilocker/documents";
 import {
   CHECK_TYPES_FOR,
   SELECTABLE_CHECKS,
@@ -32,6 +32,8 @@ import {
 
 const NEEDS_INPUT = new Set<VerificationType>(["AADHAAR", "PAN", "DRIVING_LICENSE", "RC_V2", "VOTER_ID", "PASSPORT", "EMPLOYMENT_HISTORY", "FACE_LIVENESS", "FACE_MATCH"]);
 const SELFIE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+/** Checks a DigiLocker document can fill (PAN, licence, RC). */
+const SHAREABLE_TYPES = Object.values(DIGILOCKER_DOCUMENTS).flatMap((spec) => CHECK_TYPES_FOR[spec.check]);
 
 export interface SelfieUpload { buffer: Buffer; originalname: string; mimetype: string; size: number }
 export interface DetailsInput { fullName?: string; dateOfBirth?: string; fatherName?: string; address?: string }
@@ -44,16 +46,14 @@ function isSelectableAvailable(check: SelectableCheck): boolean {
 
 @Injectable()
 export class WorkerCaseService {
-  private readonly logger = new Logger(WorkerCaseService.name);
-
   constructor(
     @Inject(VerificationStore) private readonly store: VerificationStore,
     @Inject(VerificationQueue) private readonly queue: VerificationQueue,
     @Inject(AadhaarOvseService) private readonly aadhaar: AadhaarOvseService,
     @Inject(DigiLockerService) private readonly digilocker: DigiLockerService,
-    @Inject(SurepassTransport) private readonly surepass: SurepassTransport,
     @Inject(PrismaService) private readonly prisma: PrismaService,
-    @Inject(DigiLockerDocumentReader) private readonly documents: DigiLockerDocumentReader
+    @Inject(DigiLockerCompletion) private readonly completion: DigiLockerCompletion,
+    @Inject(DigiLockerCompletionQueue) private readonly completionQueue: DigiLockerCompletionQueue
   ) {}
 
   /** Returns the worker's case, opening a draft on first sign-in. */
@@ -152,7 +152,7 @@ export class WorkerCaseService {
       criminal: { ...data.criminal, consent: data.criminal?.consent || needed.includes("court") }
     }));
     await this.store.addVerifications(application.id, added.flatMap((check) => SELECTABLE_CHECKS[check as SelectableCheck].types).map((type) => ({ type, status: "PENDING" as const })));
-    await this.startReadyChecks(application.id, owner);
+    await startReadyChecks(this.store, this.queue, application.id, owner);
     return this.view(await this.reload(application.id, owner), owner);
   }
 
@@ -178,14 +178,14 @@ export class WorkerCaseService {
       const fatherName = input?.fatherName ? personName(input.fatherName, "Enter your father's name") : data.criminal?.fatherName;
       return { ...data, personal, criminal: { ...data.criminal, fatherName } };
     });
-    await this.startReadyChecks(application.id, owner);
+    await startReadyChecks(this.store, this.queue, application.id, owner);
     return this.view(await this.reload(application.id, owner), owner);
   }
 
   async startAadhaar(worker: WorkerIdentity, client: ClientContext) {
     const { application, owner } = await this.current(worker, client);
     this.requireConsent(application);
-    if (!(await this.rowsFor(application.id, ["AADHAAR"])).length) throw new BadRequestException("Aadhaar is not one of your chosen checks");
+    if (!(await latestRows(this.store, application.id, ["AADHAAR"])).length) throw new BadRequestException("Aadhaar is not one of your chosen checks");
     if (application.data.identity?.status === "VERIFIED") throw new ConflictException("Your Aadhaar is already verified");
     const session = await this.aadhaar.initialize({ channel: "web", redirect_url: process.env.WORKER_AADHAAR_RETURN_URL || undefined }, client);
     await this.store.updateApplicationData(application.id, owner, (data) => ({
@@ -195,23 +195,34 @@ export class WorkerCaseService {
     return { url: session.web_link, intentData: typeof session.intent_data === "string" ? session.intent_data : null };
   }
 
-  /** Aadhaar through DigiLocker: a web page with mobile OTP, for when the Aadhaar app does not work. */
+  /**
+   * DigiLocker: a web page with mobile OTP. The first session verifies Aadhaar and reads any
+   * documents shared with it. Once Aadhaar is verified, a later session only shares documents,
+   * for checks added after it. Either way the server watches the session in the background.
+   */
   async startDigiLocker(worker: WorkerIdentity, client: ClientContext) {
     const { application, owner } = await this.current(worker, client);
     this.requireConsent(application);
-    if (!(await this.rowsFor(application.id, ["AADHAAR"])).length) throw new BadRequestException("Aadhaar is not one of your chosen checks");
-    if (application.data.identity?.status === "VERIFIED") throw new ConflictException("Your Aadhaar is already verified");
+    const identityDone = application.data.identity?.status === "VERIFIED";
+    if (identityDone) {
+      const shareable = await latestRows(this.store, application.id, SHAREABLE_TYPES);
+      if (!shareable.some((row) => row.status === "PENDING" || row.status === "FAILED")) throw new ConflictException("No checks are waiting for a DigiLocker document");
+    } else if (!(await latestRows(this.store, application.id, ["AADHAAR"])).length) {
+      throw new BadRequestException("Aadhaar is not one of your chosen checks");
+    }
     const session = await this.digilocker.initialize({ data: {
       signup_flow: true,
       auth_type: "web",
-      aadhaar_xml: true,
+      aadhaar_xml: !identityDone,
       expiry_minutes: 10,
       redirect_url: process.env.WORKER_DIGILOCKER_RETURN_URL || undefined,
       prefill_options: { mobile_number: worker.phone.slice(2) }
     } }, client);
-    await this.store.updateApplicationData(application.id, owner, (data) => ({
-      ...data, identity: { source: "DIGILOCKER", sessionId: session.client_id, status: "PENDING" }
-    }));
+    const startedAt = new Date().toISOString();
+    await this.store.updateApplicationData(application.id, owner, (data) => identityDone
+      ? { ...data, digilockerDocuments: { sessionId: session.client_id, status: "PENDING", startedAt } }
+      : { ...data, identity: { source: "DIGILOCKER", sessionId: session.client_id, status: "PENDING" } });
+    await this.completionQueue.watch(application.id, owner);
     return { url: session.url };
   }
 
@@ -220,12 +231,16 @@ export class WorkerCaseService {
     const { application, owner } = await this.current(worker, client);
     const identity = application.data.identity;
     if (!identity) throw new BadRequestException("Start Aadhaar verification first");
-    if (identity.status === "VERIFIED") return this.view(application, owner);
-    if (identity.source === "DIGILOCKER") return this.completeDigiLocker(application, owner);
+    if (digiLockerPending(application.data)) {
+      // Usually done already by the background job; if not, finish it now while the worker waits.
+      await this.completion.run(application.id, owner);
+      return this.view(await this.reload(application.id, owner), owner);
+    }
+    if (identity.status === "VERIFIED" || identity.source === "DIGILOCKER") return this.view(application, owner);
     // The app polls every few seconds; ask the provider at most every 10 seconds.
     if (identity.checkedAt && Date.now() - Date.parse(identity.checkedAt) < 10_000) return this.view(application, owner);
     await this.store.updateApplicationData(application.id, owner, (data) => ({ ...data, identity: { ...identity, checkedAt: new Date().toISOString() } }));
-    const [row] = await this.rowsFor(application.id, ["AADHAAR"]);
+    const [row] = await latestRows(this.store, application.id, ["AADHAAR"]);
 
     const { status } = await this.aadhaar.status(identity.sessionId, client);
     if (status === "failed" || status === "expired") {
@@ -249,7 +264,7 @@ export class WorkerCaseService {
       criminal: { ...data.criminal, fatherName: data.criminal?.fatherName || fatherFromCareOf(careOf) }
     }));
     if (row) await this.store.setResult(row.id, "VERIFIED", { providerRequestId: identity.sessionId, result: { source: "AADHAAR_OVSE", nameOnAadhaar: fullName } }, owner);
-    await this.startReadyChecks(application.id, owner);
+    await startReadyChecks(this.store, this.queue, application.id, owner);
     return this.view(await this.reload(application.id, owner), owner);
   }
 
@@ -264,7 +279,7 @@ export class WorkerCaseService {
       throw new BadRequestException("Add your name and date of birth first");
     }
     const types = CHECK_TYPES_FOR[kind];
-    const rows = await this.rowsFor(application.id, types);
+    const rows = await latestRows(this.store, application.id, types);
     if (rows.length < types.length) throw new NotFoundException("This check is not one you chose");
     if (rows.some((row) => row.status !== "PENDING" && row.status !== "FAILED")) throw new ConflictException("This check is already running or done");
 
@@ -295,118 +310,9 @@ export class WorkerCaseService {
       await this.store.updateApplicationData(application.id, owner, (data) => applyCheckInput(kind, input, data));
     }
 
-    for (const row of rows) await this.queueRow(row, application.id, owner);
+    for (const row of rows) await queueRow(this.store, this.queue, row, application.id, owner);
     await this.store.recalculateApplicationStatus(application.id, owner);
     return this.view(await this.reload(application.id, owner), owner);
-  }
-
-  /** Asks DigiLocker at most every 10 seconds, then downloads the signed Aadhaar once. */
-  private async completeDigiLocker(application: ApplicationRecord, owner: ApplicationOwner) {
-    const identity = application.data.identity!;
-    if (identity.checkedAt && Date.now() - Date.parse(identity.checkedAt) < 10_000) return this.view(application, owner);
-    await this.store.updateApplicationData(application.id, owner, (data) => ({ ...data, identity: { ...identity, checkedAt: new Date().toISOString() } }));
-
-    const id = encodeURIComponent(identity.sessionId);
-    const status = (await this.surepass.request({ path: `/api/v1/digilocker/status/${id}`, method: "GET" })).body as { data?: { completed?: boolean; failed?: boolean; status?: string } } | null;
-    const [row] = await this.rowsFor(application.id, ["AADHAAR"]);
-    if (status?.data?.failed) {
-      await this.store.updateApplicationData(application.id, owner, (data) => ({ ...data, identity: { ...identity, status: "FAILED" } }));
-      if (row) await this.store.setResult(row.id, "FAILED", { failureCode: "DIGILOCKER_NOT_COMPLETED", failureReason: "DigiLocker was not completed. Try again." }, owner);
-      await this.store.recalculateApplicationStatus(application.id, owner);
-      return this.view(await this.reload(application.id, owner), owner);
-    }
-    if (!status?.data?.completed) return this.view(await this.reload(application.id, owner), owner);
-
-    const download = (await this.surepass.request({ path: `/api/v1/digilocker/download-aadhaar/${id}`, method: "GET" })).body as { data?: { aadhaar_xml_data?: Record<string, unknown> } } | null;
-    const aadhaar = download?.data?.aadhaar_xml_data ?? {};
-    const text = (key: string) => (typeof aadhaar[key] === "string" ? String(aadhaar[key]).trim() : undefined);
-    const fullName = text("full_name");
-    const dateOfBirth = isoDate(text("dob"));
-    if (!fullName || !dateOfBirth) throw new BadRequestException("DigiLocker did not return your Aadhaar name and date of birth. Try again.");
-    const photo = text("profile_image")?.replace(/^data:image\/\w+;base64,/, "");
-    if (photo) {
-      const bytes = Buffer.from(photo, "base64");
-      await this.prisma.aadhaarPhoto.upsert({
-        where: { applicationId: application.id },
-        update: { bytes, contentType: "image/jpeg" },
-        create: { applicationId: application.id, bytes, contentType: "image/jpeg" }
-      });
-    }
-    const careOf = text("care_of");
-    const fatherName = text("father_name") || fatherFromCareOf(careOf);
-    const fullAddress = text("full_address");
-    await this.store.updateApplicationData(application.id, owner, (data) => ({
-      ...data,
-      identity: { ...identity, status: "VERIFIED", fullName, dateOfBirth, gender: text("gender"), address: fullAddress, pincode: text("zip"), careOf, verifiedAt: new Date().toISOString() },
-      personal: { ...data.personal, nameAsAadhaar: fullName, dateOfBirth, gender: text("gender"), submittedAddress: fullAddress || data.personal.submittedAddress },
-      criminal: { ...data.criminal, fatherName: data.criminal?.fatherName || fatherName }
-    }));
-    if (row) await this.store.setResult(row.id, "VERIFIED", { providerRequestId: identity.sessionId, result: { source: "DIGILOCKER", nameOnAadhaar: fullName } }, owner);
-    // Never holds up Aadhaar: if reading the shared documents fails, the worker types the numbers.
-    await this.useSharedDocuments(application.id, owner, id).catch((error: unknown) => {
-      this.logger.warn(`Could not use shared DigiLocker documents: ${error instanceof Error ? error.name : "unknown error"}`);
-    });
-    await this.startReadyChecks(application.id, owner);
-    return this.view(await this.reload(application.id, owner), owner);
-  }
-
-  /**
-   * Starts the PAN, licence and RC checks for documents the worker also ticked on DigiLocker's
-   * consent screen, using the number read from each document. The number still goes to the
-   * registry check (Surepass), matched to Aadhaar as usual. Anything not shared, or not
-   * readable, stays a normal step where the worker types the number. Never holds up Aadhaar.
-   */
-  private async useSharedDocuments(applicationId: string, owner: ApplicationOwner, sessionId: string) {
-    const shared = await this.documents.list(sessionId);
-    if (!shared) return;
-    // Which documents were shared (not their numbers), for support.
-    await this.store.updateApplicationData(applicationId, owner, (data) => ({
-      ...data, identity: { ...data.identity!, sharedDocuments: shared.map(({ doctype, issuer }) => ({ doctype, issuer })) }
-    }));
-    const { data } = await this.reload(applicationId, owner);
-    const chosen = new Set(data.selectedChecks ?? []);
-    // One document per check: a worker with two vehicles shares two RCs, and the first one wins.
-    const perCheck = new Map<string, SharedDocument>();
-    for (const doc of shared) {
-      const spec = DIGILOCKER_DOCUMENTS[doc.doctype as DigiLockerDocType];
-      if (spec && chosen.has(spec.check) && !perCheck.has(spec.check)) perCheck.set(spec.check, doc);
-    }
-    // Access lasts minutes, so every shared document is read now, side by side.
-    const read = await Promise.all([...perCheck.values()].map(async (doc) => {
-      const spec = DIGILOCKER_DOCUMENTS[doc.doctype as DigiLockerDocType];
-      const rows = await this.rowsFor(applicationId, CHECK_TYPES_FOR[spec.check]);
-      if (!rows.length || rows.some((row) => row.status !== "PENDING")) return null;
-      const found = await this.documents.number(sessionId, doc);
-      return found ? { spec, rows, found } : null;
-    }));
-    for (const item of read) {
-      if (!item) continue;
-      const { spec, rows, found } = item;
-      try {
-        await this.store.updateApplicationData(applicationId, owner, (current) => ({
-          ...applyCheckInput(spec.check, { [spec.input]: found.number }, current),
-          documentSources: { ...current.documentSources, [spec.check]: { source: "DIGILOCKER", signedBy: found.signedBy, signedAt: found.signedAt } }
-        }));
-      } catch {
-        continue; // a number in a format we do not expect: the worker types it instead
-      }
-      for (const row of rows) await this.queueRow(row, applicationId, owner);
-    }
-  }
-
-  /** The court search runs on its own once name, father's name and address are known. */
-  private async startReadyChecks(applicationId: string, owner: ApplicationOwner) {
-    const { data } = await this.reload(applicationId, owner);
-    const courtReady = Boolean(data.personal.nameAsAadhaar && data.criminal?.fatherName && data.personal.submittedAddress);
-    for (const row of await this.store.getVerificationsForApplication(applicationId, owner)) {
-      if (row.type === "ECOURTS_SEARCH" && row.status === "PENDING" && courtReady) await this.queueRow(row, applicationId, owner);
-    }
-    await this.store.recalculateApplicationStatus(applicationId, owner);
-  }
-
-  private async queueRow(row: VerificationRecord, applicationId: string, owner: ApplicationOwner) {
-    await this.store.updateVerification(row.id, { status: "QUEUED", failureCode: null as unknown as string, failureReason: null as unknown as string }, owner);
-    await this.queue.addVerificationJob({ verificationId: row.id, applicationId, type: row.type, inputAfterAttempt: row.attemptCount });
   }
 
   /** The Aadhaar photo is the reference image for face match. */
@@ -422,12 +328,6 @@ export class WorkerCaseService {
     const base64 = String(result.profile_image || "").replace(/^data:image\/\w+;base64,/, "");
     if (!base64) throw new BadRequestException("Aadhaar did not return a photo to match against");
     return { buffer: Buffer.from(base64, "base64"), originalname: "aadhaar-photo.jpg", mimetype: "image/jpeg" };
-  }
-
-  private async rowsFor(applicationId: string, types: VerificationType[]) {
-    const rows = await this.store.getVerificationsForApplication(applicationId);
-    // Latest row per type.
-    return types.map((type) => rows.filter((row) => row.type === type).at(-1)).filter((row): row is VerificationRecord => Boolean(row));
   }
 
   private requireConsent(application: ApplicationRecord) {
@@ -479,6 +379,8 @@ export class WorkerCaseService {
         address: data.personal.submittedAddress ?? null
       },
       identity: data.identity ? { source: data.identity.source, status: data.identity.status } : null,
+      /** A later DigiLocker session that only shares documents. */
+      documentsSession: data.digilockerDocuments ? { status: data.digilockerDocuments.status } : null,
       checks: rows.map((row) => ({
         id: row.id,
         type: row.type,
