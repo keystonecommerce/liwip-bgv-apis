@@ -105,17 +105,20 @@ function applicationToPayload(
   return { name: personal.nameAsAadhaar, qualification: education.highestQualification, courseName: education.courseName };
 }
 
-/** Worker-facing reason when the provider says the number is not found or not valid. */
+/** Worker-facing reason when the provider rejects the request (not found, not valid). One per check. */
 function rejectionReason(type: VerificationType): string {
-  const what: Partial<Record<VerificationType, string>> = {
-    PAN: "This PAN was not found",
-    DRIVING_LICENSE: "This licence was not found for that date of birth",
-    VOTER_ID: "This voter ID was not found",
-    PASSPORT: "This passport file number was not found for your date of birth",
-    RC_V2: "This vehicle number was not found",
-    EMPLOYMENT_HISTORY: "No employment record was found for this UAN"
+  const reasons: Partial<Record<VerificationType, string>> = {
+    PAN: "This PAN was not found. Check it and try again.",
+    DRIVING_LICENSE: "This licence was not found for that date of birth. Check it and try again.",
+    VOTER_ID: "This voter ID was not found. Check it and try again.",
+    PASSPORT: "This passport file number was not found for your date of birth. Check it and try again.",
+    RC_V2: "This vehicle number was not found. Check it and try again.",
+    EMPLOYMENT_HISTORY: "No employment record was found for this UAN. Check it and try again.",
+    ECOURTS_SEARCH: "The court records search could not run. Check your father's name and address, or try again later.",
+    FACE_LIVENESS: "Your selfie could not be checked. Take it again in good light.",
+    FACE_MATCH: "Your selfie could not be matched to your Aadhaar photo. Take it again in good light."
   };
-  return `${what[type] ?? "This number was not found"}. Check it and try again.`;
+  return reasons[type] ?? "This check could not run. Check your details and try again.";
 }
 
 @Injectable()
