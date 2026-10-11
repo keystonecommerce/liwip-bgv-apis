@@ -1,12 +1,6 @@
 import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
 import { Injectable, Logger } from "@nestjs/common";
 
-/**
- * Turns the text of a DigiLocker document into fields, with Claude on Amazon Bedrock.
- * The model is a setting (`BEDROCK_EXTRACT_MODEL`) so it can change without touching the
- * flow. The default is Haiku 4.5 on the India-only route (Mumbai and Hyderabad), so text
- * stays in India. Only already-trimmed text is sent (no address, no father's name).
- */
 export type ExtractableDocument = "DRVLC" | "RVCER" | "PANCR";
 
 export interface ExtractedFields {
@@ -24,6 +18,12 @@ const WHAT: Record<ExtractableDocument, { title: string; number: string; name: s
   PANCR: { title: "an Indian PAN verification record", number: "the 10-character PAN", name: "the PAN holder's name" }
 };
 
+/**
+ * Turns the text of a DigiLocker document into fields, with Claude on Amazon Bedrock.
+ * The model is a setting (`BEDROCK_EXTRACT_MODEL`) so it can change without touching the
+ * flow. The default is Haiku 4.5 on the India-only route (Mumbai and Hyderabad), so text
+ * stays in India. Only already-trimmed text is sent (no address, no father's name).
+ */
 @Injectable()
 export class DocumentExtractor {
   private readonly logger = new Logger(DocumentExtractor.name);

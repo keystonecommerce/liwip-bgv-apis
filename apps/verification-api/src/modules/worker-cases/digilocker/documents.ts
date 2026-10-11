@@ -3,8 +3,9 @@ import type { WorkerCheckKind } from "../worker-case.inputs";
 /**
  * Documents a worker can share from DigiLocker alongside Aadhaar, and the check each one
  * starts. DigiLocker names an issued document by a URI that ends in its type and number,
- * e.g. `in.gov.pan-PANCR-ABCDE1234F`, so the number is read from there and the usual
- * registry check runs on it, matched to Aadhaar like any other.
+ * e.g. `in.gov.pan-PANCR-ABCDE1234F`. The number is read from there, or from the signed PDF
+ * when the URI does not carry it, and the usual registry check runs on it, matched to Aadhaar
+ * like any other.
  */
 export const DIGILOCKER_DOCUMENTS = {
   PANCR: { check: "PAN", input: "panNumber" },
@@ -26,20 +27,9 @@ export interface SharedDocument {
 
 const text = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
 
-/** Document types whose PDF the model can read fields from. */
-export function isExtractable(doctype: string): doctype is "DRVLC" | "RVCER" | "PANCR" {
-  return doctype === "DRVLC" || doctype === "RVCER" || doctype === "PANCR";
-}
-
-const SIGNERS: Record<string, string> = {
-  "NATIONAL E-GOVERNANCE DIVISION": "National e-Governance Division (NeGD)",
-  "MINISTRY OF ROAD TRANSPORT AND HIGHWAYS": "Ministry of Road Transport and Highways (MoRTH)",
-  "MINISTRY OF ROAD TRANSPORT & HIGHWAYS": "Ministry of Road Transport and Highways (MoRTH)"
-};
-
-/** The signer's name as we show it ("Signed by National e-Governance Division (NeGD)"). */
-export function signerName(organisation: string | undefined): string | undefined {
-  return organisation ? SIGNERS[organisation.trim().toUpperCase()] ?? organisation : undefined;
+/** Whether a shared document is one of the types above (the ones whose number we read). */
+export function isDigiLockerDocType(doctype: string): doctype is DigiLockerDocType {
+  return Object.prototype.hasOwnProperty.call(DIGILOCKER_DOCUMENTS, doctype);
 }
 
 /** The list of documents, wherever the provider puts it in the response. */

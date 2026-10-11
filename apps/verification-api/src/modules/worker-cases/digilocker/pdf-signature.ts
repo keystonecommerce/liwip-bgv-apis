@@ -20,12 +20,15 @@ export type PdfSignature = {
   reason?: string;
 };
 
-/** Organisations whose signature we accept on DigiLocker-issued PDFs (compared case-insensitively). */
-export const TRUSTED_DIGILOCKER_SIGNER_ORGS = [
-  "NATIONAL E-GOVERNANCE DIVISION",
-  "MINISTRY OF ROAD TRANSPORT AND HIGHWAYS",
-  "MINISTRY OF ROAD TRANSPORT & HIGHWAYS"
-] as const;
+/**
+ * Organisations whose signature we accept on DigiLocker-issued PDFs (keys compared
+ * case-insensitively), with the name we show for each.
+ */
+const TRUSTED_DIGILOCKER_SIGNERS: Record<string, string> = {
+  "NATIONAL E-GOVERNANCE DIVISION": "National e-Governance Division (NeGD)",
+  "MINISTRY OF ROAD TRANSPORT AND HIGHWAYS": "Ministry of Road Transport and Highways (MoRTH)",
+  "MINISTRY OF ROAD TRANSPORT & HIGHWAYS": "Ministry of Road Transport and Highways (MoRTH)"
+};
 
 type SignatureField = { byteRange: [number, number, number, number]; der: Buffer; dictWindow: string };
 
@@ -64,7 +67,12 @@ export async function verifyPdfSignature(pdf: Buffer): Promise<PdfSignature> {
 
 export function isTrustedDigiLockerSigner(sig: PdfSignature): boolean {
   const org = sig.signer?.organisation?.trim().toUpperCase();
-  return sig.valid && !!org && (TRUSTED_DIGILOCKER_SIGNER_ORGS as readonly string[]).includes(org);
+  return sig.valid && !!org && Object.prototype.hasOwnProperty.call(TRUSTED_DIGILOCKER_SIGNERS, org);
+}
+
+/** The signer's name as we show it ("Signed by National e-Governance Division (NeGD)"). */
+export function signerName(organisation: string | undefined): string | undefined {
+  return organisation ? TRUSTED_DIGILOCKER_SIGNERS[organisation.trim().toUpperCase()] ?? organisation : undefined;
 }
 
 function invalid(reason: string): PdfSignature {

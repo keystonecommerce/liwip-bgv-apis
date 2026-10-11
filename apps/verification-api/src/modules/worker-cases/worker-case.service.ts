@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import type { ClientContext } from "../../common/auth/client-context";
 import type { WorkerIdentity } from "../../common/auth/worker-token";
 import type {
@@ -16,7 +16,7 @@ import { SurepassTransport } from "../../integrations/surepass/surepass.transpor
 import { VerificationQueue } from "../verifications/verification.queue";
 import { VerificationStore } from "../verifications/verification.repository";
 import { DigiLockerDocumentReader } from "./digilocker/document-reader.service";
-import { DIGILOCKER_DOCUMENTS, type DigiLockerDocType } from "./digilocker/documents";
+import { DIGILOCKER_DOCUMENTS, type DigiLockerDocType, type SharedDocument } from "./digilocker/documents";
 import {
   CHECK_TYPES_FOR,
   SELECTABLE_CHECKS,
@@ -44,6 +44,8 @@ function isSelectableAvailable(check: SelectableCheck): boolean {
 
 @Injectable()
 export class WorkerCaseService {
+  private readonly logger = new Logger(WorkerCaseService.name);
+
   constructor(
     @Inject(VerificationStore) private readonly store: VerificationStore,
     @Inject(VerificationQueue) private readonly queue: VerificationQueue,
@@ -340,7 +342,10 @@ export class WorkerCaseService {
       criminal: { ...data.criminal, fatherName: data.criminal?.fatherName || fatherName }
     }));
     if (row) await this.store.setResult(row.id, "VERIFIED", { providerRequestId: identity.sessionId, result: { source: "DIGILOCKER", nameOnAadhaar: fullName } }, owner);
-    await this.useSharedDocuments(application.id, owner, id);
+    // Never holds up Aadhaar: if reading the shared documents fails, the worker types the numbers.
+    await this.useSharedDocuments(application.id, owner, id).catch((error: unknown) => {
+      this.logger.warn(`Could not use shared DigiLocker documents: ${error instanceof Error ? error.name : "unknown error"}`);
+    });
     await this.startReadyChecks(application.id, owner);
     return this.view(await this.reload(application.id, owner), owner);
   }
@@ -360,10 +365,15 @@ export class WorkerCaseService {
     }));
     const { data } = await this.reload(applicationId, owner);
     const chosen = new Set(data.selectedChecks ?? []);
-    // Access lasts minutes, so every shared document is read now, side by side.
-    const read = await Promise.all(shared.map(async (doc) => {
+    // One document per check: a worker with two vehicles shares two RCs, and the first one wins.
+    const perCheck = new Map<string, SharedDocument>();
+    for (const doc of shared) {
       const spec = DIGILOCKER_DOCUMENTS[doc.doctype as DigiLockerDocType];
-      if (!spec || !chosen.has(spec.check)) return null;
+      if (spec && chosen.has(spec.check) && !perCheck.has(spec.check)) perCheck.set(spec.check, doc);
+    }
+    // Access lasts minutes, so every shared document is read now, side by side.
+    const read = await Promise.all([...perCheck.values()].map(async (doc) => {
+      const spec = DIGILOCKER_DOCUMENTS[doc.doctype as DigiLockerDocType];
       const rows = await this.rowsFor(applicationId, CHECK_TYPES_FOR[spec.check]);
       if (!rows.length || rows.some((row) => row.status !== "PENDING")) return null;
       const found = await this.documents.number(sessionId, doc);
