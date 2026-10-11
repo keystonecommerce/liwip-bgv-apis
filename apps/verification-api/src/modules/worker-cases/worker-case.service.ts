@@ -15,6 +15,7 @@ import { PrismaService } from "../../common/database/prisma.service";
 import { SurepassTransport } from "../../integrations/surepass/surepass.transport";
 import { VerificationQueue } from "../verifications/verification.queue";
 import { VerificationStore } from "../verifications/verification.repository";
+import { DIGILOCKER_DOCUMENTS, sharedDocuments, type DigiLockerDocType, type SharedDocument } from "./digilocker-documents";
 import {
   CHECK_TYPES_FOR,
   SELECTABLE_CHECKS,
@@ -337,8 +338,39 @@ export class WorkerCaseService {
       criminal: { ...data.criminal, fatherName: data.criminal?.fatherName || fatherName }
     }));
     if (row) await this.store.setResult(row.id, "VERIFIED", { providerRequestId: identity.sessionId, result: { source: "DIGILOCKER", nameOnAadhaar: fullName } }, owner);
+    await this.useSharedDocuments(application.id, owner, id);
     await this.startReadyChecks(application.id, owner);
     return this.view(await this.reload(application.id, owner), owner);
+  }
+
+  /**
+   * Starts the PAN, licence and RC checks for documents the worker also ticked on DigiLocker's
+   * consent screen, using the number from each document. Anything not shared stays a normal
+   * step where the worker types the number. Never holds up Aadhaar.
+   */
+  private async useSharedDocuments(applicationId: string, owner: ApplicationOwner, sessionId: string) {
+    let shared: SharedDocument[];
+    try {
+      shared = sharedDocuments((await this.surepass.request({ path: `/api/v1/digilocker/list-documents/${sessionId}`, method: "GET" })).body);
+    } catch {
+      return;
+    }
+    // Which documents were shared (not their numbers), for support.
+    await this.store.updateApplicationData(applicationId, owner, (data) => ({
+      ...data, identity: { ...data.identity!, sharedDocuments: shared.map(({ doctype, issuer }) => ({ doctype, issuer })) }
+    }));
+    for (const doc of shared) {
+      const spec = DIGILOCKER_DOCUMENTS[doc.doctype as DigiLockerDocType];
+      if (!spec || !doc.number) continue;
+      const rows = await this.rowsFor(applicationId, CHECK_TYPES_FOR[spec.check]);
+      if (!rows.length || rows.some((row) => row.status !== "PENDING")) continue;
+      try {
+        await this.store.updateApplicationData(applicationId, owner, (data) => applyCheckInput(spec.check, { [spec.input]: doc.number }, data));
+      } catch {
+        continue; // a number in a format we do not expect: the worker types it instead
+      }
+      for (const row of rows) await this.queueRow(row, applicationId, owner);
+    }
   }
 
   /** The court search runs on its own once name, father's name and address are known. */
