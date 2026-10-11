@@ -90,6 +90,8 @@ export interface WorkerIdentityRecord {
   pincode?: string;
   careOf?: string;
   verifiedAt?: string;
+  /** Documents the worker also shared on DigiLocker's consent screen (types only, no numbers). */
+  sharedDocuments?: Array<{ doctype: string; issuer?: string }>;
   /** Last time the provider was asked for this session's status (polling is throttled). */
   checkedAt?: string;
 }

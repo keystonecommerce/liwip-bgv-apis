@@ -45,6 +45,12 @@ function createSurepassMock({ token = 'mock_surepass_token', port = 0, timeoutMs
         full_address: '12 MG Road, Indiranagar, Bengaluru, Karnataka 560038', zip: '560038', masked_aadhaar: 'XXXXXXXX1234',
         profile_image: '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/yQALCAABAAEBAREA/8wABgAQEAX/2gAIAQEAAD8A0s8g/9k='
       } });
+      // Documents ticked on the consent screen besides Aadhaar (shape assumed from the DigiLocker spec).
+      if (url.pathname.includes('/digilocker/list-documents/')) body.data = [
+        { uri: 'in.gov.uidai-ADHAR-XXXXXXXX1234', doctype: 'ADHAR', name: 'Aadhaar Card', issuer: 'UIDAI' },
+        { uri: 'in.gov.pan-PANCR-ABCPK1234F', doctype: 'PANCR', name: 'PAN Verification Record', issuer: 'Income Tax Department' },
+        { uri: 'in.gov.transport-DRVLC-KA0120190001234', doctype: 'DRVLC', name: 'Driving License', issuer: 'Ministry of Road Transport' }
+      ];
       if (url.pathname.endsWith('/aadhaar-v4/initialize')) {
         // The real page sends the worker back to redirect_url after OTP; the mock does it at once.
         let redirect = 'https://example.test/mock-aadhaar';
