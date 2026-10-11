@@ -129,6 +129,7 @@ export class AdminService {
       status: application.status,
       names: { aadhaar: data.identity?.fullName ?? null, declared: data.personal?.declaredName ?? null, matchedAgainst: data.personal?.nameAsAadhaar ?? null },
       sharedFromDigiLocker: data.identity?.sharedDocuments ?? null,
+      digilockerSession: data.identity?.source === "DIGILOCKER" ? data.identity.sessionId ?? null : null,
       checks: application.verifications.map((row) => ({
         id: row.id, type: row.type, status: row.status, failureCode: row.failureCode, failureReason: row.failureReason,
         // Only the fields that explain a decision, never document numbers.
