@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sharedDocuments } from "../../apps/verification-api/src/modules/worker-cases/digilocker-documents";
+import { sharedDocuments } from "../../apps/verification-api/src/modules/worker-cases/digilocker/documents";
 
 test("reads type and number from DigiLocker document URIs", () => {
   const docs = sharedDocuments({ data: [

@@ -13,6 +13,8 @@ export interface ApplicationOwner {
 }
 
 export interface ApplicationSchema {
+  /** Where a check's input came from, when not typed by the worker (e.g. a signed DigiLocker document). */
+  documentSources?: Partial<Record<string, { source: "DIGILOCKER"; signedBy?: string; signedAt?: string }>>;
   packageCode?: string;
   packageVersion?: number;
   personal: {

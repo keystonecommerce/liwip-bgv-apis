@@ -1,4 +1,4 @@
-import type { WorkerCheckKind } from "./worker-case.inputs";
+import type { WorkerCheckKind } from "../worker-case.inputs";
 
 /**
  * Documents a worker can share from DigiLocker alongside Aadhaar, and the check each one
@@ -16,6 +16,8 @@ export type DigiLockerDocType = keyof typeof DIGILOCKER_DOCUMENTS;
 
 export interface SharedDocument {
   doctype: string;
+  /** The provider's id for downloading the file. */
+  fileId?: string;
   /** Present for the document types above when the URI carries it. */
   number?: string;
   issuer?: string;
@@ -23,6 +25,22 @@ export interface SharedDocument {
 }
 
 const text = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
+
+/** Document types whose PDF the model can read fields from. */
+export function isExtractable(doctype: string): doctype is "DRVLC" | "RVCER" | "PANCR" {
+  return doctype === "DRVLC" || doctype === "RVCER" || doctype === "PANCR";
+}
+
+const SIGNERS: Record<string, string> = {
+  "NATIONAL E-GOVERNANCE DIVISION": "National e-Governance Division (NeGD)",
+  "MINISTRY OF ROAD TRANSPORT AND HIGHWAYS": "Ministry of Road Transport and Highways (MoRTH)",
+  "MINISTRY OF ROAD TRANSPORT & HIGHWAYS": "Ministry of Road Transport and Highways (MoRTH)"
+};
+
+/** The signer's name as we show it ("Signed by National e-Governance Division (NeGD)"). */
+export function signerName(organisation: string | undefined): string | undefined {
+  return organisation ? SIGNERS[organisation.trim().toUpperCase()] ?? organisation : undefined;
+}
 
 /** The list of documents, wherever the provider puts it in the response. */
 function items(body: unknown): Record<string, unknown>[] {
@@ -40,6 +58,6 @@ export function sharedDocuments(body: unknown): SharedDocument[] {
     const fromUri = /-([A-Z]{5})-([A-Z0-9-]+)$/i.exec(uri);
     const doctype = (text(item.doctype) ?? text(item.doc_type) ?? fromUri?.[1] ?? "").toUpperCase();
     const number = fromUri && fromUri[1].toUpperCase() === doctype ? fromUri[2].toUpperCase().replace(/[^A-Z0-9]/g, "") : undefined;
-    return { doctype, number, issuer: text(item.issuer), name: text(item.name) ?? text(item.description) };
+    return { doctype, fileId: text(item.file_id) ?? text(item.uri), number, issuer: text(item.issuer), name: text(item.name) ?? text(item.description) };
   }).filter((doc) => doc.doctype);
 }
