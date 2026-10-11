@@ -92,6 +92,28 @@ export class AdminService {
     return { deleted, redisKeys };
   }
 
+  /** Who has opened a worker case, newest first: name, last 4 digits of the phone, status and check progress. */
+  async listWorkers(limit: number) {
+    const cases = await this.prisma.application.findMany({
+      where: { workerPhone: { not: null } },
+      orderBy: { createdAt: "desc" },
+      take: Math.min(Math.max(limit, 1), 500),
+      select: { workerPhone: true, status: true, createdAt: true, updatedAt: true, data: true, verificationCard: { select: { status: true } }, verifications: { select: { type: true, status: true } } }
+    });
+    return cases.map((row) => {
+      const data = row.data as { personal?: { declaredName?: string; nameAsAadhaar?: string }; identity?: { fullName?: string } };
+      return {
+        name: data.identity?.fullName || data.personal?.declaredName || data.personal?.nameAsAadhaar || null,
+        phoneLast4: row.workerPhone?.slice(-4) ?? null,
+        status: row.status,
+        checks: { total: row.verifications.length, verified: row.verifications.filter((check) => check.status === "VERIFIED").length },
+        card: row.verificationCard?.status ?? null,
+        startedAt: row.createdAt,
+        lastActivity: row.updatedAt
+      };
+    });
+  }
+
   /** Support view of one worker's current case: each check's state and the name the provider returned. */
   async inspectWorker(phoneInput: string) {
     const phone = this.workerPhone(phoneInput);
