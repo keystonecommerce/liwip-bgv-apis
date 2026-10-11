@@ -33,6 +33,12 @@ export class AdminController {
     });
   }
 
+  // Support: who has opened a worker case, newest first (names and the last 4 digits only).
+  @Get("worker-cases")
+  listWorkers(@Query("limit") limit?: string) {
+    return this.admin.listWorkers(Number(limit) || 100);
+  }
+
   // Support: one worker's checks, states and the names providers returned.
   @Get("worker-cases/:phone")
   inspectWorker(@Param("phone") phone: string) {
