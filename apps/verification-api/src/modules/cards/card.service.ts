@@ -36,7 +36,8 @@ export class CardService {
       type: row.type,
       status: row.status,
       completedAt: row.status === "VERIFIED" ? row.completedAt?.toISOString() ?? row.updatedAt.toISOString() : null,
-      source: row.type === "AADHAAR" ? data.identity?.source ?? null : null
+      source: row.type === "AADHAAR" ? data.identity?.source ?? null : data.documentSources?.[row.type]?.source ?? null,
+      signedBy: data.documentSources?.[row.type]?.signedBy ?? null
     }));
     const hasPhoto = Boolean(await this.prisma.workerPhoto.count({ where: { applicationId: application.id } }) || await this.prisma.aadhaarPhoto.count({ where: { applicationId: application.id } }));
     const name = data.personal?.declaredName || data.personal?.nameAsAadhaar || null;

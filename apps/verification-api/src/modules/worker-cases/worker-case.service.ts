@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import type { ClientContext } from "../../common/auth/client-context";
 import type { WorkerIdentity } from "../../common/auth/worker-token";
 import type {
@@ -15,7 +15,8 @@ import { PrismaService } from "../../common/database/prisma.service";
 import { SurepassTransport } from "../../integrations/surepass/surepass.transport";
 import { VerificationQueue } from "../verifications/verification.queue";
 import { VerificationStore } from "../verifications/verification.repository";
-import { DIGILOCKER_DOCUMENTS, sharedDocuments, type DigiLockerDocType, type SharedDocument } from "./digilocker-documents";
+import { DigiLockerDocumentReader } from "./digilocker/document-reader.service";
+import { DIGILOCKER_DOCUMENTS, type DigiLockerDocType, type SharedDocument } from "./digilocker/documents";
 import {
   CHECK_TYPES_FOR,
   SELECTABLE_CHECKS,
@@ -43,13 +44,16 @@ function isSelectableAvailable(check: SelectableCheck): boolean {
 
 @Injectable()
 export class WorkerCaseService {
+  private readonly logger = new Logger(WorkerCaseService.name);
+
   constructor(
     @Inject(VerificationStore) private readonly store: VerificationStore,
     @Inject(VerificationQueue) private readonly queue: VerificationQueue,
     @Inject(AadhaarOvseService) private readonly aadhaar: AadhaarOvseService,
     @Inject(DigiLockerService) private readonly digilocker: DigiLockerService,
     @Inject(SurepassTransport) private readonly surepass: SurepassTransport,
-    @Inject(PrismaService) private readonly prisma: PrismaService
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(DigiLockerDocumentReader) private readonly documents: DigiLockerDocumentReader
   ) {}
 
   /** Returns the worker's case, opening a draft on first sign-in. */
@@ -338,34 +342,51 @@ export class WorkerCaseService {
       criminal: { ...data.criminal, fatherName: data.criminal?.fatherName || fatherName }
     }));
     if (row) await this.store.setResult(row.id, "VERIFIED", { providerRequestId: identity.sessionId, result: { source: "DIGILOCKER", nameOnAadhaar: fullName } }, owner);
-    await this.useSharedDocuments(application.id, owner, id);
+    // Never holds up Aadhaar: if reading the shared documents fails, the worker types the numbers.
+    await this.useSharedDocuments(application.id, owner, id).catch((error: unknown) => {
+      this.logger.warn(`Could not use shared DigiLocker documents: ${error instanceof Error ? error.name : "unknown error"}`);
+    });
     await this.startReadyChecks(application.id, owner);
     return this.view(await this.reload(application.id, owner), owner);
   }
 
   /**
    * Starts the PAN, licence and RC checks for documents the worker also ticked on DigiLocker's
-   * consent screen, using the number from each document. Anything not shared stays a normal
-   * step where the worker types the number. Never holds up Aadhaar.
+   * consent screen, using the number read from each document. The number still goes to the
+   * registry check (Surepass), matched to Aadhaar as usual. Anything not shared, or not
+   * readable, stays a normal step where the worker types the number. Never holds up Aadhaar.
    */
   private async useSharedDocuments(applicationId: string, owner: ApplicationOwner, sessionId: string) {
-    let shared: SharedDocument[];
-    try {
-      shared = sharedDocuments((await this.surepass.request({ path: `/api/v1/digilocker/list-documents/${sessionId}`, method: "GET" })).body);
-    } catch {
-      return;
-    }
+    const shared = await this.documents.list(sessionId);
+    if (!shared) return;
     // Which documents were shared (not their numbers), for support.
     await this.store.updateApplicationData(applicationId, owner, (data) => ({
       ...data, identity: { ...data.identity!, sharedDocuments: shared.map(({ doctype, issuer }) => ({ doctype, issuer })) }
     }));
+    const { data } = await this.reload(applicationId, owner);
+    const chosen = new Set(data.selectedChecks ?? []);
+    // One document per check: a worker with two vehicles shares two RCs, and the first one wins.
+    const perCheck = new Map<string, SharedDocument>();
     for (const doc of shared) {
       const spec = DIGILOCKER_DOCUMENTS[doc.doctype as DigiLockerDocType];
-      if (!spec || !doc.number) continue;
+      if (spec && chosen.has(spec.check) && !perCheck.has(spec.check)) perCheck.set(spec.check, doc);
+    }
+    // Access lasts minutes, so every shared document is read now, side by side.
+    const read = await Promise.all([...perCheck.values()].map(async (doc) => {
+      const spec = DIGILOCKER_DOCUMENTS[doc.doctype as DigiLockerDocType];
       const rows = await this.rowsFor(applicationId, CHECK_TYPES_FOR[spec.check]);
-      if (!rows.length || rows.some((row) => row.status !== "PENDING")) continue;
+      if (!rows.length || rows.some((row) => row.status !== "PENDING")) return null;
+      const found = await this.documents.number(sessionId, doc);
+      return found ? { spec, rows, found } : null;
+    }));
+    for (const item of read) {
+      if (!item) continue;
+      const { spec, rows, found } = item;
       try {
-        await this.store.updateApplicationData(applicationId, owner, (data) => applyCheckInput(spec.check, { [spec.input]: doc.number }, data));
+        await this.store.updateApplicationData(applicationId, owner, (current) => ({
+          ...applyCheckInput(spec.check, { [spec.input]: found.number }, current),
+          documentSources: { ...current.documentSources, [spec.check]: { source: "DIGILOCKER", signedBy: found.signedBy, signedAt: found.signedAt } }
+        }));
       } catch {
         continue; // a number in a format we do not expect: the worker types it instead
       }
@@ -465,6 +486,8 @@ export class WorkerCaseService {
         needsInput: row.status === "PENDING" && (NEEDS_INPUT.has(row.type) || (row.type === "ECOURTS_SEARCH" && !courtReady)),
         canResubmit: row.status === "FAILED" && NEEDS_INPUT.has(row.type),
         reason: row.status === "FAILED" || row.status === "MANUAL_REVIEW" ? row.failureReason ?? null : null,
+        // Set when the number came from a signed DigiLocker document rather than typed.
+        source: data.documentSources?.[row.type] ?? null,
         updatedAt: row.updatedAt
       })),
       card: application.card ? { status: application.card.status, issuedAt: application.card.issuedAt, expiresAt: application.card.expiresAt } : null

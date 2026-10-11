@@ -1,10 +1,11 @@
-import type { WorkerCheckKind } from "./worker-case.inputs";
+import type { WorkerCheckKind } from "../worker-case.inputs";
 
 /**
  * Documents a worker can share from DigiLocker alongside Aadhaar, and the check each one
  * starts. DigiLocker names an issued document by a URI that ends in its type and number,
- * e.g. `in.gov.pan-PANCR-ABCDE1234F`, so the number is read from there and the usual
- * registry check runs on it, matched to Aadhaar like any other.
+ * e.g. `in.gov.pan-PANCR-ABCDE1234F`. The number is read from there, or from the signed PDF
+ * when the URI does not carry it, and the usual registry check runs on it, matched to Aadhaar
+ * like any other.
  */
 export const DIGILOCKER_DOCUMENTS = {
   PANCR: { check: "PAN", input: "panNumber" },
@@ -16,6 +17,8 @@ export type DigiLockerDocType = keyof typeof DIGILOCKER_DOCUMENTS;
 
 export interface SharedDocument {
   doctype: string;
+  /** The provider's id for downloading the file. */
+  fileId?: string;
   /** Present for the document types above when the URI carries it. */
   number?: string;
   issuer?: string;
@@ -23,6 +26,11 @@ export interface SharedDocument {
 }
 
 const text = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
+
+/** Whether a shared document is one of the types above (the ones whose number we read). */
+export function isDigiLockerDocType(doctype: string): doctype is DigiLockerDocType {
+  return Object.prototype.hasOwnProperty.call(DIGILOCKER_DOCUMENTS, doctype);
+}
 
 /** The list of documents, wherever the provider puts it in the response. */
 function items(body: unknown): Record<string, unknown>[] {
@@ -40,6 +48,6 @@ export function sharedDocuments(body: unknown): SharedDocument[] {
     const fromUri = /-([A-Z]{5})-([A-Z0-9-]+)$/i.exec(uri);
     const doctype = (text(item.doctype) ?? text(item.doc_type) ?? fromUri?.[1] ?? "").toUpperCase();
     const number = fromUri && fromUri[1].toUpperCase() === doctype ? fromUri[2].toUpperCase().replace(/[^A-Z0-9]/g, "") : undefined;
-    return { doctype, number, issuer: text(item.issuer), name: text(item.name) ?? text(item.description) };
+    return { doctype, fileId: text(item.file_id) ?? text(item.uri), number, issuer: text(item.issuer), name: text(item.name) ?? text(item.description) };
   }).filter((doc) => doc.doctype);
 }
