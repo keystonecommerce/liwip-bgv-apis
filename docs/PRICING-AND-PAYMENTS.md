@@ -1,6 +1,6 @@
 # Packages, pricing and payments
 
-**Status:** built on `feat/admin-access-layer`, 21 October 2026. Invite redemption (§5, step 3) is not built yet.
+**Status:** built on `feat/admin-auth-billing`, 21 October 2026, including invite redemption (§5, step 3).
 **Covers:** packages and check prices configured by Keystone, bulk discounts and partner prices, quotes, Cashfree payments, GST invoices, company seats, bulk invites by WhatsApp, individuals paying for themselves, monthly API usage statements and Keystone's revenue view.
 
 Everything here runs in `liwip-bgv-apis`. Admin routes sit under `/v1/admin/*` behind the access layer in [ADMIN-ACCESS.md](ADMIN-ACCESS.md). Money is stored as integer **paise**, never floats.
@@ -135,10 +135,13 @@ Base URL `https://sandbox.cashfree.com/pg` or `https://api.cashfree.com/pg`. Hea
    - **Template** (approve in AiSensy as the `AISENSY_INVITE_CAMPAIGN_NAME` campaign): "Hi {{1}}, {{2}} has asked you to complete your background verification with Liwip. It takes about 10 minutes. This link works only for this number." It has one URL button, Start verification, pointing to `INVITE_LINK_BASE/v/{{1}}` with the token as the suffix.
    - If WhatsApp fails, it falls back to SMS.
    - Sending is refused if seats are short.
-3. **Start:** the person opens the link and signs in by OTP. The OTP phone must equal the invite phone, otherwise the link doesn't open the case.
-   - The case is created under the partner's program with the invite's package version.
-   - The seat moves from reserved to used (`CONSUME`).
-   - A name on Aadhaar that doesn't match the uploaded name goes to review, not failure.
+3. **Start:** the person opens the link and signs in by OTP. The OTP phone must equal the invite phone, otherwise the link doesn't open the case ("This link is for the number ending 0123").
+   - The worker app previews the link (`GET /v1/worker/invites/:token`: partner, package, last four digits of the phone) and shows who asked before sign-in.
+   - After the code, it redeems the link (`POST /v1/worker/invites/:token/redeem`) before it sets the session. The case is created under the partner's program with the invite's package version, or a draft the person already has there takes the package.
+   - The checks are the package's, in the app's order: Aadhaar first, face checks as one selfie step. The person approves them but can't change them (`checksFixed`); they can add checks later, billed as usage.
+   - The seat moves from reserved to used (`CONSUME`). The `PrepaidCase` covers the package's checks and what the journey adds (Aadhaar, both face steps), so none is billed again as usage.
+   - The person gets a worker token for the partner's program. Redeeming again returns the same case.
+   - Not built yet: a name on Aadhaar that doesn't match the uploaded name goes to review, not failure.
 4. **Expiry:** invites not started in 30 days expire. Cancelling an invite releases its seat (`RELEASE`).
 5. **Company code:** an individual who enters a corporate code uses a seat from that partner's balance for the matching package. If no seat is left, they're told to ask their company.
 

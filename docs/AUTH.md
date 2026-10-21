@@ -161,7 +161,7 @@ The tables below are generated from `apps/verification-api/src/modules/admin-acc
 - The worker app's server calls the API with its own API key (`worker:cases`), then the person's worker token.
 - The person proves their phone number by SMS code (MSG91) or a passkey.
 - The token ties them to one partner and program, and lasts 12 hours.
-- Invite links (`/v/:token`) carry a single-use token that is stored hashed, and work only for the invited number. Redemption is not built yet.
+- Invite links (`/v/:token`) carry a single-use token that is stored hashed, and work only for the invited number. Redeeming one gives the person a worker token for the partner's program: the worker app's key (`worker:cases`) then acts for that program on their case only.
 
 ## Support tools
 
