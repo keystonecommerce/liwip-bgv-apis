@@ -313,7 +313,8 @@ model Verification {
   providerCalls     ProviderCall[]
 
   @@unique([id, applicationId])
-  @@index([applicationId])
+  @@index([applicationId, createdAt])
+  @@index([tenantId, clientId, completedAt])
   @@index([tenantId, clientId, type])
   @@index([status])
   @@index([type])
@@ -808,6 +809,7 @@ model Order {
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, createdAt])
   @@index([status, expiresAt])
+  @@index([status, paidAt])
 }
 
 model OrderLine {
@@ -886,6 +888,7 @@ model Refund {
   order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@index([orderId])
+  @@index([createdAt])
 }
 
 model Invoice {
@@ -995,6 +998,8 @@ model Invite {
 
   @@index([tenantId, phone, status])
   @@index([status, expiresAt])
+  @@index([tenantId, createdAt])
+  @@index([uploadId])
 }
 
 /// The price of one check run. tenantId null is the list price; a partner's row replaces it.

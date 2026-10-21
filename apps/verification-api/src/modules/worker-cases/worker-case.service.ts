@@ -380,10 +380,10 @@ export class WorkerCaseService {
   /** What the worker app may see: states and the worker's own details, never raw provider data. */
   private async view(application: ApplicationRecord, owner: ApplicationOwner) {
     const data: ApplicationSchema = application.data;
-    const rows = await this.store.getVerificationsForApplication(application.id, owner);
+    const [rows, paidTypes] = await Promise.all([this.store.getVerificationsForApplication(application.id, owner), this.paidTypes(application.id)]);
     const selected = data.selectedChecks ?? [];
     const courtReady = Boolean(data.personal.nameAsAadhaar && data.criminal?.fatherName && data.personal.submittedAddress);
-    const paid = new Set(await this.paidTypes(application.id));
+    const paid = new Set(paidTypes);
     return {
       applicationId: application.id,
       cardNumber: application.card?.cardNumber ?? (await this.store.getCardNumber(application.id)) ?? null,

@@ -47,6 +47,9 @@ export class AuditInterceptor implements NestInterceptor {
     const start = Date.now();
     const method = request.method ?? "";
     const path = request.route?.path ?? "";
+    // The worker app polls a person's own case and card every few seconds; those reads are not
+    // worth a row each. Their writes, and any error, are still recorded.
+    const routine = method === "GET" && path.startsWith("/v1/worker/");
     const ip = request.ip ?? request.socket?.remoteAddress ?? null;
     const userAgent = firstHeader(request.headers["user-agent"]) ?? null;
 
@@ -68,6 +71,7 @@ export class AuditInterceptor implements NestInterceptor {
     return next.handle().pipe(
       tap({
         next: (body) => {
+          if (routine) return;
           const response = context.switchToHttp().getResponse<{ statusCode?: number }>();
           this.audit.record({
             ...base,

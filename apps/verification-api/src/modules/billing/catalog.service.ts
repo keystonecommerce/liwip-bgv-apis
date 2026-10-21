@@ -334,17 +334,20 @@ export class CatalogService {
 
   /** Everything the quote needs for the requested codes, at the published versions. */
   async pricingInputs(tenantId: string | null, codes: string[], addOnTypes: string[] = [], now = new Date()) {
-    const rows = await this.prisma.verificationPackage.findMany({ where: { status: "PUBLISHED", kind: "BASE", code: { in: codes }, ...visibleTo(tenantId) } });
-    const links = await this.prisma.packageAddOn.findMany({ where: { basePackageCode: { in: codes } } });
-    const partnerPrices = tenantId ? await this.prisma.partnerPrice.findMany({ where: { tenantId, packageCode: { in: codes }, ...activeAt(now) }, orderBy: { createdAt: "desc" } }) : [];
-    const rateRows = addOnTypes.length ? await this.rates.rowsFor(null, addOnTypes) : [];
+    const [rows, links, partnerPrices, rateRows, tiers] = await Promise.all([
+      this.prisma.verificationPackage.findMany({ where: { status: "PUBLISHED", kind: "BASE", code: { in: codes }, ...visibleTo(tenantId) } }),
+      this.prisma.packageAddOn.findMany({ where: { basePackageCode: { in: codes } } }),
+      tenantId ? this.prisma.partnerPrice.findMany({ where: { tenantId, packageCode: { in: codes }, ...activeAt(now) }, orderBy: { createdAt: "desc" } }) : Promise.resolve([]),
+      addOnTypes.length ? this.rates.rowsFor(null, addOnTypes) : Promise.resolve([]),
+      this.tiersFor(tenantId, now)
+    ]);
     const item = (row: PackageRow): PricedItem => ({ id: row.id, code: row.code, version: row.version, name: row.name, listPricePaise: row.listPricePaise ?? 0 });
     return {
       published: new Map(rows.filter((row) => row.listPricePaise).map((row) => [row.code, { row, item: item(row) }])),
       allowedAddOns: (base: string) => new Set(links.filter((link) => link.basePackageCode === base && !(BUNDLED_CHECKS as readonly string[]).includes(link.addOnCode)).map((link) => link.addOnCode)),
       addOn: (type: string): AddOnItem | null => { const rate = pickRate(rateRows, null, type, now); return rate ? { checkType: type, checkRateId: rate.id, unitPricePaise: rate.unitPricePaise } : null; },
       partnerPrice: (code: string) => partnerPrices.find((price) => price.packageCode === code)?.unitPricePaise ?? null,
-      tiers: await this.tiersFor(tenantId, now)
+      tiers
     };
   }
 
