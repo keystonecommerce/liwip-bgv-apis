@@ -9,6 +9,10 @@ import { AadhaarOvseModule } from "./modules/aadhaar-ovse/aadhaar-ovse.module";
 import { WorkerCaseModule } from "./modules/worker-cases/worker-case.module";
 import { CardModule } from "./modules/cards/card.module";
 import { AdminModule } from "./modules/admin/admin.module";
+import { AdminAccessModule } from "./modules/admin-access/admin-access.module";
+import { AdminPanelModule } from "./modules/admin-panel/admin-panel.module";
+import { BillingModule } from "./modules/billing/billing.module";
+import { StaffAuthModule } from "./modules/staff-auth/staff-auth.module";
 import { DigiLockerModule } from "./modules/digilocker/digilocker.module";
 import { DocumentStorageModule } from "./modules/document-storage/document-storage.module";
 import { FieldTasksModule } from "./modules/field-tasks/field-tasks.module";
@@ -39,6 +43,10 @@ const throttleLimit = Number(process.env.THROTTLE_LIMIT || 120);
     PlatformModule,
     UsageModule,
     AdminModule,
+    AdminAccessModule,
+    StaffAuthModule,
+    AdminPanelModule,
+    BillingModule,
     WorkerCaseModule,
     CardModule,
   ],

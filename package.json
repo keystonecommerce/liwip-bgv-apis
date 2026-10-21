@@ -17,6 +17,7 @@
     "key:revoke": "tsx scripts/revoke-key.ts",
     "key:list": "tsx scripts/list-keys.ts",
     "reviewer:provision": "tsx scripts/provision-reviewer.ts",
+    "admin:provision": "tsx scripts/provision-admin.ts",
     "smoke": "tsx smoke-tests/run-smoke.ts",
     "smoke:documents": "tsx smoke-tests/run-document-storage-smoke.ts",
     "smoke:s3-upload": "tsx smoke-tests/run-s3-upload-smoke.ts",
