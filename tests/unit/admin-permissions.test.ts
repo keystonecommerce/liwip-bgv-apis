@@ -186,3 +186,11 @@ test("invites and payment returns link to the right app: control for Keystone, b
     process.env = saved;
   }
 });
+
+test("docs/AUTH.md roles and permissions match the code (run npm run docs:roles after changing them)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { resolve } = await import("node:path");
+  const { withRolesReference } = await import("../../apps/verification-api/src/modules/admin-access/roles-reference");
+  const doc = readFileSync(resolve(process.cwd(), "docs/AUTH.md"), "utf8");
+  assert.equal(doc, withRolesReference(doc));
+});

@@ -91,7 +91,6 @@ before(async () => {
   process.env.DATABASE_URL = databaseUrl;
   process.env.REDIS_HOST = redis.hostname; process.env.REDIS_PORT = redis.port || "6379";
   process.env.NODE_ENV = "production"; process.env.ENABLE_INTERNAL_ROUTES = "false";
-  process.env.ADMIN_API_KEY = `test_admin_${tag}`;
   process.env.ADMIN_AUTH_SECRET = "test_only_admin_auth_secret_longer_than_32";
   process.env.WORKER_TOKEN_SECRET = "test_only_worker_token_secret_longer_than_32";
   process.env.ADMIN_PANEL_ORIGINS = ORIGIN;

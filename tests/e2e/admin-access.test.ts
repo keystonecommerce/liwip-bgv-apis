@@ -15,11 +15,11 @@ import { issueLiveToken } from "../../apps/verification-api/src/modules/cards/ca
 /**
  * Admin access layer: staff sign-in, CSRF, role-binding scope, tenant isolation between
  * two partners (cases, cards, users, audit rows), relationship end, verifier SCOPED vs
- * UNIVERSAL, public card checks and the deprecated X-Admin-Key routes.
+ * UNIVERSAL, public card checks, recent sign-in for powerful actions, API keys from the
+ * apps, the partner finance role, support tools, and that the old ways in are gone.
  */
 let app: INestApplication, db: PrismaClient;
 const tag = randomUUID().replaceAll("-", "").slice(0, 12);
-const adminKey = `test_admin_${tag}`;
 const ORIGIN = "https://admin.test.liwip.example";
 const COOKIE = "__Host-liwip_admin";
 const emails: EmailMessage[] = [];
@@ -118,7 +118,6 @@ before(async () => {
   process.env.DATABASE_URL = databaseUrl;
   process.env.REDIS_HOST = redis.hostname; process.env.REDIS_PORT = redis.port || "6379";
   process.env.NODE_ENV = "production"; process.env.ENABLE_INTERNAL_ROUTES = "false";
-  process.env.ADMIN_API_KEY = adminKey;
   process.env.ADMIN_AUTH_SECRET = "test_only_admin_auth_secret_longer_than_32";
   process.env.WORKER_TOKEN_SECRET = "test_only_worker_token_secret_longer_than_32";
   process.env.ADMIN_PANEL_ORIGINS = ORIGIN;
@@ -207,9 +206,9 @@ test("partner management: profile, programs, unique corporate codes, disable and
   assert.ok(own.body.programs.every((program: { tenantId: string }) => program.tenantId === partnerA.id));
 });
 
-test("access comes only from role bindings: the legacy role column grants nothing", async () => {
+test("access comes only from role bindings: an account with a home partner but no binding gets nothing", async () => {
   const email = `legacy-${tag}@example.com`;
-  await db.portalUser.create({ data: { id: `legacy_${tag}`, email, displayName: "Legacy", role: "CORPORATE_ADMIN", tenantId: partnerA.id, status: "ACTIVE" } });
+  await db.portalUser.create({ data: { id: `legacy_${tag}`, email, displayName: "Legacy", tenantId: partnerA.id, status: "ACTIVE" } });
   const legacy = await signInDirect(email);
   assert.equal((await as(legacy, "get", "/v1/admin/cases")).status, 403);
   assert.equal((await as(legacy, "get", "/v1/admin/cases", partnerA.id)).status, 403);
@@ -454,9 +453,72 @@ test("partner admins remove their own team members", async () => {
   assert.equal((await as(viewerA, "get", "/v1/admin/cases")).status, 403, "access ends with the binding");
 });
 
-test("legacy X-Admin-Key routes keep working and are marked deprecated", async () => {
-  const response = await api().get("/admin/partners").set("x-admin-key", adminKey);
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.deprecation, "true");
-  assert.equal((await api().get("/admin/partners")).status, 401);
+test("the old ways in are gone: no shared admin key, no password login, no separate field login", async () => {
+  assert.equal((await api().get("/admin/partners").set("x-admin-key", "anything")).status, 404);
+  assert.equal((await api().post("/v1/portal-auth/login").send({ email: "a@example.com", password: "x" })).status, 404);
+  assert.equal((await api().get("/v1/field/tasks")).status, 404);
+});
+
+test("powerful actions need a recent sign-in; confirming with an email code opens them again", async () => {
+  const stale = new Date(Date.now() - 20 * 60_000);
+  await db.staffSession.update({ where: { tokenHash: createHash("sha256").update(keystone.token).digest("hex") }, data: { verifiedAt: stale } });
+  assert.equal((await as(keystone, "get", "/v1/admin/staff")).status, 200, "reading never asks");
+  const session = await as(keystone, "get", "/v1/admin/auth/session");
+  assert.ok(new Date(session.body.recentSignInUntil) < new Date(), "the panel can see a confirmation is due");
+  const body = { email: `stepup-${tag}@example.com`, displayName: "Step Up", roleKey: "KEYSTONE_READ_ONLY" };
+  const refused = await as(keystone, "post", "/v1/admin/staff").send(body);
+  assert.equal(refused.status, 403);
+  assert.equal(refused.body.code, "RECENT_SIGN_IN_REQUIRED");
+  assert.equal((await as(keystone, "post", "/v1/admin/auth/confirm/otp/verify").send({ code: "000000" })).status, 401, "a wrong code confirms nothing");
+  assert.equal((await as(keystone, "post", "/v1/admin/auth/confirm/otp/send")).status, 200);
+  const code = emails.filter((item) => item.kind === "otp" && item.to === `keystone-${tag}@example.com`).at(-1)!.variables.code;
+  const confirmed = await as(keystone, "post", "/v1/admin/auth/confirm/otp/verify").send({ code });
+  assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body));
+  assert.ok(new Date(confirmed.body.recentSignInUntil) > new Date(Date.now() + 14 * 60_000));
+  assert.equal((await as(keystone, "post", "/v1/admin/staff").send(body)).status, 201);
+});
+
+test("API keys from the apps: partner admins manage only their own programs, never worker:cases", async () => {
+  const partnerScopes = (await as(adminA, "get", "/v1/admin/api-keys/scopes")).body.items.map((item: { scope: string }) => item.scope);
+  assert.ok(partnerScopes.includes("applications:read") && !partnerScopes.includes("worker:cases"));
+  assert.ok((await as(keystone, "get", "/v1/admin/api-keys/scopes")).body.items.some((item: { scope: string }) => item.scope === "worker:cases"));
+
+  const created = await as(adminA, "post", "/v1/admin/api-keys").send({ programId: partnerA.programId, name: "Zomato integration", scopes: ["usage:read"] });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.ok(created.body.rawKey.startsWith("gv_"));
+  assert.equal((await api().get("/v1/usage").set("x-api-key", created.body.rawKey)).status, 200, "the new key works");
+  assert.equal((await as(adminA, "post", "/v1/admin/api-keys").send({ programId: partnerA.programId, scopes: ["worker:cases"] })).status, 403);
+  assert.equal((await as(adminA, "post", "/v1/admin/api-keys").send({ programId: partnerB.programId, scopes: ["usage:read"] })).status, 404, "another partner's program");
+
+  const listed = (await as(adminA, "get", "/v1/admin/api-keys")).body.items;
+  assert.ok(listed.every((key: { partner: { id: string } }) => key.partner.id === partnerA.id));
+  assert.ok(!JSON.stringify(listed).includes(created.body.rawKey), "a key is shown once, never listed");
+  assert.ok(!(await as(adminB, "get", "/v1/admin/api-keys")).body.items.some((key: { id: string }) => key.id === created.body.apiKey.id));
+  assert.equal((await as(adminB, "post", `/v1/admin/api-keys/${created.body.apiKey.id}/revoke`)).status, 404);
+  await invite(adminA, "/v1/admin/users", { email: `operator-keys-${tag}@example.com`, displayName: "Operator Keys", roleKey: "PARTNER_OPERATOR" });
+  const operator = await signInDirect(`operator-keys-${tag}@example.com`);
+  assert.equal((await as(operator, "get", "/v1/admin/api-keys")).status, 403, "operators do not manage keys");
+
+  const revoked = await as(adminA, "post", `/v1/admin/api-keys/${created.body.apiKey.id}/revoke`);
+  assert.equal(revoked.status, 200);
+  assert.equal((await api().get("/v1/usage").set("x-api-key", created.body.rawKey)).status, 401);
+});
+
+test("partner finance buys and sees orders, but no verification details", async () => {
+  await invite(adminA, "/v1/admin/users", { email: `finance-a-${tag}@example.com`, displayName: "Finance A", roleKey: "PARTNER_FINANCE" });
+  const finance = await signInDirect(`finance-a-${tag}@example.com`);
+  assert.equal((await as(finance, "get", "/v1/admin/orders")).status, 200);
+  assert.equal((await as(finance, "get", "/v1/admin/catalog")).status, 200);
+  for (const path of ["/v1/admin/cases", "/v1/admin/users", "/v1/admin/api-keys"]) assert.equal((await as(finance, "get", path)).status, 403, path);
+});
+
+test("support tools are Keystone's, behind support.manage", async () => {
+  const phone = partnerA.cases[0].phone;
+  await invite(keystone, "/v1/admin/staff", { email: `support-${tag}@example.com`, displayName: "Support", roleKey: "KEYSTONE_OPS_REVIEWER" });
+  const support = await signInDirect(`support-${tag}@example.com`);
+  assert.equal((await as(adminA, "post", "/v1/admin/support/people/reset").send({ phone })).status, 403);
+  const reset = await as(support, "post", "/v1/admin/support/people/reset").send({ phone });
+  assert.equal(reset.status, 200, JSON.stringify(reset.body));
+  assert.equal(reset.body.casesArchived, 1);
+  assert.equal((await as(support, "post", "/v1/admin/support/purge").send({ confirm: "DELETE ALL WORKER DATA" })).status, 403, "purge stays off outside test environments");
 });
