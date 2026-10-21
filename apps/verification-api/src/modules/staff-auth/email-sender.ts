@@ -87,13 +87,13 @@ export function otpEmail(to: string, code: string, minutes: number): EmailMessag
   };
 }
 
-export function inviteEmail(to: string, name: string, organisation: string): EmailMessage {
-  const url = process.env.ADMIN_PANEL_URL?.trim() || "https://admin.liwip.com";
+/** `url` is the app this person signs in to: the control panel (Keystone) or the business portal. */
+export function inviteEmail(to: string, name: string, organisation: string, url: string): EmailMessage {
   return {
     kind: "invite",
     to,
-    subject: "You have been added to the Liwip BGV admin panel",
-    text: `Hello ${name}, you now have access to ${organisation} on the Liwip BGV admin panel. Sign in at ${url} with this email address; we will email you a code.`,
+    subject: "You have been added to Liwip BGV",
+    text: `Hello ${name}, you now have access to ${organisation} on Liwip BGV. Sign in at ${url} with this email address; we will email you a code.`,
     variables: { name, organisation, url }
   };
 }

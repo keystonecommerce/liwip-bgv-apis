@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../common/database/prisma.service";
-import { hashIp } from "../admin-access/admin-config";
+import { hashIp, panelUrl } from "../admin-access/admin-config";
 import { AdminContext } from "../admin-access/admin-context";
 import { hasPermission } from "../admin-access/admin-permissions";
 import { StaffSessionService } from "../admin-access/staff-session.service";
@@ -157,7 +157,7 @@ export class CardLookupService {
       return { user, access };
     });
     admin.audit = { resourceType: "PortalUser", resourceId: created.user.id, metadata: { level, expiresAt: expiresAt?.toISOString() ?? null, cards: cardIds.length } };
-    await this.email.send(inviteEmail(email, displayName, "Liwip BGV card verification")).catch(() => undefined);
+    await this.email.send(inviteEmail(email, displayName, "Liwip BGV card verification", panelUrl("business"))).catch(() => undefined);
     return { ...created.access, email, cardCount: cardIds.length };
   }
 

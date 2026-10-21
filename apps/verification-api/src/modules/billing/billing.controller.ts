@@ -8,6 +8,7 @@ import { CurrentWorker, WorkerGuard } from "../../common/auth/worker.guard";
 import type { WorkerIdentity } from "../../common/auth/worker-token";
 import { PrismaService } from "../../common/database/prisma.service";
 import { AdminAccessGuard } from "../admin-access/admin-access.guard";
+import { panelUrl } from "../admin-access/admin-config";
 import { AdminContext, AuditAction, CurrentAdmin, RequirePermission, scopedTenantId } from "../admin-access/admin-context";
 import { id, pageOf, paginated, text } from "../admin-panel/input";
 import { billingConfig, periodOf, periodRange } from "./billing-config";
@@ -43,7 +44,8 @@ function period(value: unknown): string {
   return text;
 }
 
-const partnerReturnUrl = () => process.env.BILLING_PARTNER_RETURN_URL || `${(process.env.ADMIN_PANEL_URL || "http://localhost:5173").replace(/\/+$/, "")}/billing/orders/{order_id}`;
+// Partners pay in the business portal, so Cashfree sends them back there (also when Keystone buys for one).
+const partnerReturnUrl = () => process.env.BILLING_PARTNER_RETURN_URL || `${panelUrl("business")}/billing/orders/{order_id}`;
 
 /** Keystone: packages, add-ons, discount tiers, partner prices, seat adjustments and refunds. */
 @Controller("v1/admin")

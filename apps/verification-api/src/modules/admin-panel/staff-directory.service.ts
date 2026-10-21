@@ -5,6 +5,7 @@ import { PrismaService } from "../../common/database/prisma.service";
 import { AdminContext, partnerDb } from "../admin-access/admin-context";
 import { BindingLike, canGrant, GrantRequest, SYSTEM_ROLES, systemRole } from "../admin-access/admin-permissions";
 import { StaffSessionService } from "../admin-access/staff-session.service";
+import { panelUrl } from "../admin-access/admin-config";
 import { EMAIL_SENDER, EmailSender, inviteEmail } from "../staff-auth/email-sender";
 import { normaliseEmail } from "../staff-auth/staff-otp.service";
 import { oneOf, text } from "./input";
@@ -87,7 +88,7 @@ export class StaffDirectoryService {
     });
     actor.audit = { tenantId: grant.tenantId ?? null, resourceType: "PortalUser", resourceId: user.id, metadata: { roleKey: grant.roleKey, scopeType: grant.scopeType, vendorId: grant.vendorId ?? null, newAccount: !existing } };
     // Best effort: the person can still sign in by requesting a code.
-    await this.email.send(inviteEmail(email, displayName, organisation)).catch((error: unknown) => this.logger.warn(`Invite email not sent: ${error instanceof Error ? error.message : String(error)}`));
+    await this.email.send(inviteEmail(email, displayName, organisation, panelUrl(grant.scopeType === "GLOBAL" ? "control" : "business"))).catch((error: unknown) => this.logger.warn(`Invite email not sent: ${error instanceof Error ? error.message : String(error)}`));
     return { user: { id: user.id, email, displayName: existing ? undefined : displayName, newAccount: !existing }, binding: roleSummary(binding) };
   }
 

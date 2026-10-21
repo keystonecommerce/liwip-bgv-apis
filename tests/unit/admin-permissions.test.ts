@@ -169,3 +169,20 @@ test("session cookie parsing", () => {
   assert.equal(readCookie("liwip_admin_other=x", "liwip_admin"), undefined);
   assert.equal(readCookie(undefined, "x"), undefined);
 });
+
+test("invites and payment returns link to the right app: control for Keystone, business for everyone else", async () => {
+  const { panelUrl } = await import("../../apps/verification-api/src/modules/admin-access/admin-config");
+  const saved = { ...process.env };
+  try {
+    process.env.ADMIN_PANEL_URL = "https://fallback.example/";
+    delete process.env.ADMIN_CONTROL_URL; delete process.env.ADMIN_BUSINESS_URL;
+    assert.equal(panelUrl("control"), "https://fallback.example");
+    assert.equal(panelUrl("business"), "https://fallback.example");
+    process.env.ADMIN_CONTROL_URL = "https://control.bgv.example/";
+    process.env.ADMIN_BUSINESS_URL = "https://business.bgv.example";
+    assert.equal(panelUrl("control"), "https://control.bgv.example");
+    assert.equal(panelUrl("business"), "https://business.bgv.example");
+  } finally {
+    process.env = saved;
+  }
+});

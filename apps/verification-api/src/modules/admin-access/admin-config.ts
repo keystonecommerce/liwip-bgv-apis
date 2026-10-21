@@ -32,7 +32,17 @@ export function cookieSettings(): CookieSettings {
   return { name, secure, maxAgeMs: ttl * 3_600_000 };
 }
 
-/** Exact origins of the admin panel (ADMIN_PANEL_ORIGINS, comma separated). */
+/**
+ * Where people sign in. Keystone staff use the control panel; partner and vendor staff and
+ * verifiers use the business portal. ADMIN_PANEL_URL is the fallback for both.
+ */
+export function panelUrl(app: "control" | "business"): string {
+  const fallback = process.env.ADMIN_PANEL_URL?.trim() || "http://localhost:5173";
+  const url = (app === "control" ? process.env.ADMIN_CONTROL_URL : process.env.ADMIN_BUSINESS_URL)?.trim() || fallback;
+  return url.replace(/\/+$/, "");
+}
+
+/** Exact origins of both apps (ADMIN_PANEL_ORIGINS, comma separated). */
 export function adminOrigins(): string[] {
   return (process.env.ADMIN_PANEL_ORIGINS || "").split(/[\s,]+/).map((origin) => origin.trim().replace(/\/+$/, "")).filter(Boolean);
 }
