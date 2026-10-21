@@ -3,7 +3,6 @@ import type { FieldTask } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../common/database/prisma.service";
 import type { ApplicationSchema } from "../../domain/verification.types";
-import type { PortalUserContext } from "../portal-auth/portal-auth.service";
 import { VerificationStore } from "../verifications/verification.repository";
 import {
   ArriveInput,
@@ -14,6 +13,16 @@ import {
   SubmitFieldTaskInput
 } from "./field-tasks.types";
 
+/** A field agent acting for one vendor (field.tasks.perform at that vendor). */
+export interface FieldAgent {
+  userId: string;
+  vendorId: string;
+}
+
+/**
+ * Field tasks. Keystone hands each task to a vendor; that vendor's agents see it in their pool,
+ * accept it, visit and submit. An agent never sees another vendor's tasks or a task with no vendor.
+ */
 @Injectable()
 export class FieldTasksService {
   constructor(
@@ -22,12 +31,11 @@ export class FieldTasksService {
   ) {}
 
   // Create a field task for any physical-address check that is awaiting a field visit
-  // and does not already have a task. Runs before an agent lists their work so newly
-  // created cases surface without a separate provisioning job.
-  async syncPendingTasks(owner: { tenantId: string; clientId: string }): Promise<void> {
+  // and does not already have a task. Runs before tasks are listed so newly created
+  // cases surface without a separate provisioning job.
+  async syncPendingTasks(): Promise<void> {
     const pending = await this.prisma.verification.findMany({
       where: {
-        application: owner,
         type: { in: [...FIELD_TASK_VERIFICATION_TYPES] },
         status: "MANUAL_REVIEW",
         fieldTask: { is: null }
@@ -57,8 +65,7 @@ export class FieldTasksService {
     }
   }
 
-  async listForAgent(agent: PortalUserContext) {
-    if (agent.tenantId && agent.clientId) await this.syncPendingTasks({ tenantId: agent.tenantId, clientId: agent.clientId });
+  async listForAgent(agent: FieldAgent) {
     const mine = await this.prisma.fieldTask.findMany({
       where: { ...this.assignedScope(agent), assignedToUserId: agent.userId, status: { notIn: ["CANCELLED"] } },
       orderBy: [{ dueAt: "asc" }, { createdAt: "asc" }]
@@ -74,12 +81,12 @@ export class FieldTasksService {
     };
   }
 
-  async getForAgent(agent: PortalUserContext, taskId: string) {
+  async getForAgent(agent: FieldAgent, taskId: string) {
     const task = await this.viewableTask(agent, taskId);
     return this.toDetail(task);
   }
 
-  async accept(agent: PortalUserContext, taskId: string) {
+  async accept(agent: FieldAgent, taskId: string) {
     const task = await this.viewableTask(agent, taskId);
     if (task.assignedToUserId === agent.userId && (task.status === "ACCEPTED" || task.status === "IN_PROGRESS")) return this.toDetail(task);
     if (!["PENDING_ASSIGNMENT", "ASSIGNED"].includes(task.status)) throw new BadRequestException("Task is not available for acceptance");
@@ -89,7 +96,7 @@ export class FieldTasksService {
     return this.toDetail(updated);
   }
 
-  async reject(agent: PortalUserContext, taskId: string, reason: string) {
+  async reject(agent: FieldAgent, taskId: string, reason: string) {
     const trimmed = String(reason || "").trim();
     if (trimmed.length < 3 || trimmed.length > 300) {
       throw new BadRequestException("A rejection reason of 3 to 300 characters is required");
@@ -104,7 +111,7 @@ export class FieldTasksService {
     return this.toDetail(updated);
   }
 
-  async arrive(agent: PortalUserContext, taskId: string, input: ArriveInput) {
+  async arrive(agent: FieldAgent, taskId: string, input: ArriveInput) {
     const task = await this.ownedTask(agent, taskId);
     if (task.status !== "ACCEPTED" && task.status !== "IN_PROGRESS") {
       throw new BadRequestException("Accept the task before recording arrival");
@@ -118,7 +125,7 @@ export class FieldTasksService {
     return this.toDetail(updated);
   }
 
-  async submit(agent: PortalUserContext, taskId: string, input: SubmitFieldTaskInput) {
+  async submit(agent: FieldAgent, taskId: string, input: SubmitFieldTaskInput) {
     const task = await this.ownedTask(agent, taskId);
     if (task.status !== "IN_PROGRESS" && task.status !== "ACCEPTED") {
       throw new BadRequestException("Only an accepted or in-progress task can be submitted");
@@ -163,15 +170,15 @@ export class FieldTasksService {
     return this.toDetail(updated);
   }
 
-  private async ownedTask(agent: PortalUserContext, taskId: string): Promise<FieldTask> {
+  private async ownedTask(agent: FieldAgent, taskId: string): Promise<FieldTask> {
     const task = await this.prisma.fieldTask.findFirst({ where: { ...this.assignedScope(agent), id: taskId, assignedToUserId: agent.userId } });
     if (!task) throw new NotFoundException("Task not found");
     return task;
   }
 
-  // A task the agent may view or accept: already theirs, or still unassigned within
-  // a client scope the agent belongs to. Keeps one client's worker PII out of another's agents.
-  private async viewableTask(agent: PortalUserContext, taskId: string): Promise<FieldTask> {
+  // A task the agent may view or accept: already theirs, or unassigned in their vendor's pool.
+  // Keeps one vendor's (and one partner's) worker PII away from every other vendor's agents.
+  private async viewableTask(agent: FieldAgent, taskId: string): Promise<FieldTask> {
     const task = await this.prisma.fieldTask.findFirst({
       where: {
         id: taskId,
@@ -185,15 +192,45 @@ export class FieldTasksService {
     return task;
   }
 
-  // Unassigned-pool visibility. An agent scoped to a tenant/client only sees that scope's
-  // pool; an unscoped (cross-client LIWIP) agent sees no open pool until explicitly assigned.
-  private poolScope(agent: PortalUserContext): { tenantId: string; clientId: string } | { id: string } {
-    if (agent.tenantId && agent.clientId) return { tenantId: agent.tenantId, clientId: agent.clientId };
-    return { id: "__no_pool__" };
+  // The vendor's open pool: tasks Keystone gave this vendor that no agent has taken yet.
+  private poolScope(agent: FieldAgent): { vendorId: string } {
+    return { vendorId: agent.vendorId };
   }
 
-  private assignedScope(agent: PortalUserContext): { tenantId?: string; clientId?: string } {
-    return { ...(agent.tenantId ? { tenantId: agent.tenantId } : {}), ...(agent.clientId ? { clientId: agent.clientId } : {}) };
+  // An agent's own tasks stay within the vendor they act for.
+  private assignedScope(agent: FieldAgent): { vendorId: string } {
+    return { vendorId: agent.vendorId };
+  }
+
+  /** Keystone (every vendor) or a vendor admin (their vendor): the task list with its state. */
+  async listForManager(vendorId: string | null, filter: { status?: string; unassigned?: boolean }) {
+    await this.syncPendingTasks();
+    const tasks = await this.prisma.fieldTask.findMany({
+      where: {
+        ...(vendorId ? { vendorId } : {}),
+        ...(filter.unassigned ? { vendorId: null } : {}),
+        ...(filter.status ? { status: filter.status } : {})
+      },
+      orderBy: [{ dueAt: "asc" }, { createdAt: "asc" }],
+      take: 500,
+      include: { vendor: { select: { id: true, name: true } }, assignedTo: { select: { id: true, displayName: true } } }
+    });
+    return { items: tasks.map((task) => ({ ...this.toListItem(task), vendor: task.vendor, agent: task.assignedTo })) };
+  }
+
+  /** Keystone hands a task to a vendor (or takes it back with null). Only while no agent has accepted it. */
+  async assignVendor(taskId: string, vendorId: string | null) {
+    if (vendorId) {
+      const vendor = await this.prisma.vendor.findUnique({ where: { id: vendorId }, select: { status: true } });
+      if (!vendor || vendor.status !== "ACTIVE") throw new NotFoundException("Vendor not found or disabled");
+    }
+    const changed = await this.prisma.fieldTask.updateMany({ where: { id: taskId, assignedToUserId: null, status: "PENDING_ASSIGNMENT" }, data: { vendorId } });
+    if (!changed.count) {
+      const exists = await this.prisma.fieldTask.count({ where: { id: taskId } });
+      if (!exists) throw new NotFoundException("Task not found");
+      throw new ConflictException("An agent already has this task");
+    }
+    return this.toDetail(await this.prisma.fieldTask.findUniqueOrThrow({ where: { id: taskId } }));
   }
 
   private coordinate(value: number | undefined, label: string, bound: number): number | null {
