@@ -149,10 +149,6 @@ model PortalUser {
   clientId       String?
   email          String             @unique
   displayName    String
-  /// Deprecated: legacy portal password login only. Staff sign in by email OTP or passkey.
-  passwordHash   String?
-  /// Deprecated: legacy portal role. Never used by the admin access layer.
-  role           String?
   /// ACTIVE | DISABLED
   status         String             @default("ACTIVE")
   /// Bumped to revoke every session of this account.
@@ -169,9 +165,8 @@ model PortalUser {
   passkeys       StaffPasskey[]
   verifierAccess VerifierAccess?
 
-  @@index([tenantId, role, status])
-  @@index([clientId, role, status])
-  @@index([role, status])
+  @@index([tenantId, status])
+  @@index([clientId, status])
 }
 
 model ApiKey {
@@ -383,6 +378,8 @@ model FieldTask {
   applicationId    String
   verificationId   String          @unique
   assignedToUserId String?
+  /// The vendor Keystone handed this visit to. Only that vendor's agents see it; none until set.
+  vendorId         String?
   taskType         String          @default("ADDRESS_VERIFICATION")
   status           String          @default("PENDING_ASSIGNMENT")
   workerName       String
@@ -402,10 +399,12 @@ model FieldTask {
   application      Application     @relation(fields: [applicationId, tenantId, clientId], references: [id, tenantId, clientId], onDelete: Cascade, map: "FieldTask_application_owner_fkey")
   verification     Verification    @relation(fields: [verificationId, applicationId], references: [id, applicationId], onDelete: Cascade, map: "FieldTask_verification_owner_fkey")
   assignedTo       PortalUser?     @relation("AgentTasks", fields: [assignedToUserId], references: [id])
+  vendor           Vendor?         @relation(fields: [vendorId], references: [id])
   evidence         FieldEvidence[]
 
   @@unique([verificationId, applicationId])
   @@index([assignedToUserId, status])
+  @@index([vendorId, status])
   @@index([tenantId, clientId, status])
   @@index([status, dueAt])
 }
@@ -542,15 +541,16 @@ model CardScan {
 
 /// A vendor running ground checks (field address and police verification).
 model Vendor {
-  id        String             @id
-  slug      String             @unique
-  name      String
+  id         String             @id
+  slug       String             @unique
+  name       String
   /// ACTIVE | DISABLED
-  status    String             @default("ACTIVE")
-  contacts  Json?
-  createdAt DateTime           @default(now())
-  updatedAt DateTime           @updatedAt
-  bindings  StaffRoleBinding[]
+  status     String             @default("ACTIVE")
+  contacts   Json?
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+  bindings   StaffRoleBinding[]
+  fieldTasks FieldTask[]
 
   @@index([status])
 }
@@ -603,6 +603,8 @@ model StaffSession {
   sessionVersion Int
   /// otp | passkey
   authMethod     String
+  /// Last sign-in or "confirm it's you"; powerful actions need it within ADMIN_RECENT_SIGN_IN_MINUTES.
+  verifiedAt     DateTime   @default(now())
   ipHash         String?
   userAgent      String?
   createdAt      DateTime   @default(now())
