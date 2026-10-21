@@ -191,3 +191,10 @@ test("invites go by WhatsApp only when INVITE_SENDER=aisensy is fully configured
     process.env = saved;
   }
 });
+
+test("an invited person's journey: Aadhaar first, face checks as one step, steps the app lacks left out", async () => {
+  const { journeyChecks } = await import("../../apps/verification-api/src/modules/billing/invite-redemption.service");
+  assert.deepEqual(journeyChecks(["PAN", "FACE_LIVENESS", "FACE_MATCH", "CURRENT_ADDRESS"]), ["AADHAAR", "PAN", "FACE"]);
+  assert.deepEqual(journeyChecks(["ECOURTS_SEARCH", "DRIVING_LICENSE", "RC_V2", "REFERENCE_CHECK"]), ["AADHAAR", "DRIVING_LICENSE", "RC_V2", "ECOURTS_SEARCH"]);
+  assert.deepEqual(journeyChecks([]), ["AADHAAR"]);
+});

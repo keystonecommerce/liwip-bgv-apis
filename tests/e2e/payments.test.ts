@@ -17,6 +17,8 @@ import { CatalogService } from "../../apps/verification-api/src/modules/billing/
 import { OrdersService } from "../../apps/verification-api/src/modules/billing/orders.service";
 import { QuoteService } from "../../apps/verification-api/src/modules/billing/quote.service";
 import { periodRange, previousPeriod } from "../../apps/verification-api/src/modules/billing/billing-config";
+import { PartnerProvisioning } from "../../apps/verification-api/src/common/security/partner-provisioning";
+import { issueWorkerToken } from "../../apps/verification-api/src/common/auth/worker-token";
 
 /**
  * Packages and prices set by Keystone, a partner's quote and Cashfree checkout (fake gateway),
@@ -388,4 +390,53 @@ test("revenue keeps packages and checks apart, net of GST and refunds", async ()
   assert.ok(everyone.checks.addOnsPaise >= 15_000, "the individual's add-on is a check sale");
   assert.ok(everyone.packages.individualPackages >= 1);
   assert.equal((await as(keystone, "get", "/v1/admin/revenue?from=2026-13-01")).status, 400);
+});
+
+test("invite redemption: only the invited number, through the worker app, opens the case under the partner and uses the seat", async () => {
+  // The Liwip worker app's own key (worker:cases is Keystone-only) and a person signed in through it.
+  const app = await new PartnerProvisioning(db).createPartner({ tenantSlug: `liwip-app-${tag.toLowerCase()}`, tenantName: "Liwip app", clientCode: "WORKER_PORTAL", clientName: "Liwip worker app", scopes: ["worker:cases", "otp:write"] });
+  const appKey = app.rawKey;
+  const signedIn = (mobile: string) => issueWorkerToken({ tenantId: app.tenant.id, clientId: app.client.id, phone: `91${mobile}` }).token;
+
+  const invitee = phone(70);
+  const upload = ok(await as(adminA, "post", "/v1/admin/bulk-uploads").send({ programId: programA, packageCode: RIDER, fileName: "one.csv", csv: `name,mobile\nSita Devi,${invitee}\n` }), 201).body;
+  ok(await as(adminA, "post", `/v1/admin/bulk-uploads/${upload.id}/send`));
+  const token = sent.at(-1)!.link.split("/v/")[1];
+  const before = await seatsOf(adminA);
+
+  // Before sign-in: whose link it is. Only the worker app's key may ask.
+  const preview = ok(await api().get(`/v1/worker/invites/${token}`).set("x-api-key", appKey)).body;
+  assert.deepEqual(preview, { status: "OPEN", partnerName: "Pay a", packageName: "Rider", phoneLast4: invitee.slice(-4) });
+  assert.equal((await api().get("/v1/worker/invites/not-a-real-token-at-all-xxxxx").set("x-api-key", appKey)).body.status, "INVALID");
+
+  const redeem = (who: string) => api().post(`/v1/worker/invites/${token}/redeem`).set("x-api-key", appKey).set("x-worker-token", signedIn(who));
+  const wrong = await redeem(phone(71));
+  assert.equal(wrong.status, 403, "another number cannot use the link");
+  assert.match(wrong.body.message, new RegExp(invitee.slice(-4)));
+
+  const redeemed = ok(await redeem(invitee)).body;
+  assert.equal(redeemed.partnerName, "Pay a");
+  assert.equal(ok(await redeem(invitee)).body.applicationId, redeemed.applicationId, "redeeming again returns the same case");
+
+  // The case belongs to the partner's program, with the package's checks, paid by the seat.
+  const caseView = ok(await api().get("/v1/worker/case").set("x-api-key", appKey).set("x-worker-token", redeemed.workerToken)).body;
+  assert.equal(caseView.applicationId, redeemed.applicationId);
+  assert.deepEqual(caseView.sponsor, { partnerName: "Pay a", packageName: "Rider" });
+  assert.equal(caseView.checksFixed, true);
+  // Rider here is PAN_<tag> + DRIVING_LICENSE; the app has no step for the tagged test type, Aadhaar always leads.
+  assert.deepEqual(caseView.selectedChecks, ["AADHAAR", "DRIVING_LICENSE"]);
+  assert.equal((await api().put("/v1/worker/case/checks").set("x-api-key", appKey).set("x-worker-token", redeemed.workerToken).send({ checks: ["PAN"] })).status, 409, "the company chose the checks");
+  const row = await db.application.findUniqueOrThrow({ where: { id: redeemed.applicationId } });
+  assert.equal(row.tenantId, partnerA);
+  assert.equal(row.clientId, programA);
+  assert.equal(row.apiKeyId, null, "the worker app's key does not own a partner's case");
+  assert.deepEqual((await db.prepaidCase.findUniqueOrThrow({ where: { applicationId: row.id } })).coveredChecks, [PAN, "DRIVING_LICENSE", "AADHAAR"], "the seat also covers the Aadhaar the journey adds");
+  const after = await seatsOf(adminA);
+  assert.equal(after.used, before.used + 1);
+  assert.equal(after.reserved, before.reserved - 1);
+  assert.equal(after.available, before.available, "the seat was already set aside when the link was sent");
+
+  // The partner sees the case; an invite token is useless with any other key.
+  assert.ok((await as(adminA, "get", "/v1/admin/cases")).body.items.some((item: { id: string }) => item.id === row.id));
+  assert.equal((await api().get("/v1/worker/case").set("x-api-key", app.rawKey).set("x-worker-token", signedIn(invitee))).body.applicationId === row.id, false, "the app's own sign-in is a different (Liwip) case");
 });

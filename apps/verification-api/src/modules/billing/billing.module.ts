@@ -1,8 +1,9 @@
 import { Module } from "@nestjs/common";
-import { BillingAdminController, BillingPartnerController, BillingPublicController, WorkerBillingController } from "./billing.controller";
+import { BillingAdminController, BillingPartnerController, BillingPublicController, WorkerBillingController, WorkerInvitesController } from "./billing.controller";
 import { CashfreeGateway, PAYMENT_GATEWAY } from "./cashfree.client";
 import { CatalogService } from "./catalog.service";
 import { CheckRatesService } from "./check-rates.service";
+import { InviteRedemptionService } from "./invite-redemption.service";
 import { INVITE_SENDER, inviteSenderFromEnv } from "./invite-sender";
 import { InvitesService } from "./invites.service";
 import { OrdersService } from "./orders.service";
@@ -13,9 +14,9 @@ import { UsageBillingService } from "./usage-billing.service";
 
 /** Packages and check prices, quotes, Cashfree orders, seats, invites, API usage statements and revenue. See docs/PRICING-AND-PAYMENTS.md. */
 @Module({
-  controllers: [BillingAdminController, BillingPartnerController, WorkerBillingController, BillingPublicController],
+  controllers: [BillingAdminController, BillingPartnerController, WorkerBillingController, WorkerInvitesController, BillingPublicController],
   providers: [
-    CatalogService, CheckRatesService, QuoteService, SeatsService, OrdersService, InvitesService, UsageBillingService, RevenueService,
+    CatalogService, CheckRatesService, QuoteService, SeatsService, OrdersService, InvitesService, InviteRedemptionService, UsageBillingService, RevenueService,
     { provide: PAYMENT_GATEWAY, useClass: CashfreeGateway },
     { provide: INVITE_SENDER, useFactory: inviteSenderFromEnv }
   ],

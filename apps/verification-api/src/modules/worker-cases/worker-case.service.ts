@@ -87,6 +87,7 @@ export class WorkerCaseService {
   async selectChecks(worker: WorkerIdentity, client: ClientContext, input: { checks?: string[] }) {
     const { application, owner } = await this.current(worker, client);
     if (application.status !== "DRAFT") throw new ConflictException("Checks are fixed once consent is given");
+    if (application.data.sponsor) throw new ConflictException(`${application.data.sponsor.partnerName} chose the checks for you`);
     const chosen = [...new Set((Array.isArray(input?.checks) ? input.checks : []).map((item) => String(item).toUpperCase()))];
     if (!chosen.length) throw new BadRequestException("Choose at least one check");
     for (const check of chosen) {
@@ -348,7 +349,8 @@ export class WorkerCaseService {
   }
 
   private owner(client: ClientContext): ApplicationOwner {
-    return { tenantId: client.tenantId, clientId: client.clientId, apiKeyId: client.apiKeyId };
+    // A case opened through a partner's invite belongs to the partner's program, not the worker app's key.
+    return { tenantId: client.tenantId, clientId: client.clientId, apiKeyId: client.actingForInvite ? undefined : client.apiKeyId };
   }
 
   /** What the worker app may see: states and the worker's own details, never raw provider data. */
@@ -369,6 +371,9 @@ export class WorkerCaseService {
         selected: selected.includes(check)
       })),
       selectedChecks: selected,
+      // Invited by a company: it chose the checks and pays for them.
+      sponsor: data.sponsor ? { partnerName: data.sponsor.partnerName, packageName: data.sponsor.packageName } : null,
+      checksFixed: Boolean(data.sponsor),
       consent: data.consent?.granted ? { textVersion: data.consent.textVersion, grantedAt: data.consent.grantedAt, items: data.consentItems ?? [] } : null,
       details: {
         source: data.identity?.status === "VERIFIED" ? "AADHAAR" : data.personal.nameAsAadhaar ? "WORKER" : null,

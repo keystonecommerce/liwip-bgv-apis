@@ -14,6 +14,7 @@ import { id, pageOf, paginated, text } from "../admin-panel/input";
 import { billingConfig, periodOf, periodRange } from "./billing-config";
 import { CatalogService, DiscountRuleInput, PackageInput, packageCode, PartnerPriceInput } from "./catalog.service";
 import { CheckRateInput, CheckRatesService } from "./check-rates.service";
+import { InviteRedemptionService } from "./invite-redemption.service";
 import { InvitesService } from "./invites.service";
 import { CheckoutCustomer, OrdersService } from "./orders.service";
 import { QuoteService } from "./quote.service";
@@ -418,6 +419,30 @@ export class WorkerBillingController {
   async order(@CurrentWorker() worker: WorkerIdentity, @Param("orderId") orderId: string) {
     const application = await this.workerCase(worker);
     return this.orders.get(String(orderId), { tenantId: worker.tenantId, clientId: worker.clientId, applicationId: application.id });
+  }
+}
+
+/**
+ * The Liwip worker app opening a partner's invite. Its own key (worker:cases) is required, so
+ * only the worker app's server can call these; redeeming also needs the person signed in.
+ */
+@Controller("v1/worker/invites")
+@UseGuards(ApiKeyGuard, ScopeGuard)
+@RequireScopes("worker:cases")
+export class WorkerInvitesController {
+  constructor(@Inject(InviteRedemptionService) private readonly redemption: InviteRedemptionService) {}
+
+  /** Before sign-in: whose link this is and whether it still works. */
+  @Get(":token")
+  preview(@Param("token") token: string) {
+    return this.redemption.preview(String(token));
+  }
+
+  @Post(":token/redeem")
+  @HttpCode(200)
+  @UseGuards(WorkerGuard)
+  redeem(@CurrentWorker() worker: WorkerIdentity, @Param("token") token: string) {
+    return this.redemption.redeem(worker, String(token));
   }
 }
 
