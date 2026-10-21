@@ -297,7 +297,7 @@ test("an individual's add-on check is paid upfront at its check price and covere
   ok(await webhook(order.orderId));
   const covered = await db.prepaidCase.findUniqueOrThrow({ where: { applicationId } });
   assert.equal(covered.source, "ORDER");
-  assert.deepEqual([...(covered.coveredChecks as string[])].sort(), [COURT, "DRIVING_LICENSE", PAN].sort());
+  assert.deepEqual([...(covered.coveredChecks as string[])].sort(), ["AADHAAR", COURT, "DRIVING_LICENSE", PAN].sort(), "Aadhaar is in every bundle");
   const [line] = await db.orderLine.findMany({ where: { orderId: order.orderId } });
   assert.equal(line.packagePaise, 49_900);
   assert.equal(line.addOnPaise, 15_000);
@@ -430,7 +430,7 @@ test("invite redemption: only the invited number, through the worker app, opens 
   assert.equal(row.tenantId, partnerA);
   assert.equal(row.clientId, programA);
   assert.equal(row.apiKeyId, null, "the worker app's key does not own a partner's case");
-  assert.deepEqual((await db.prepaidCase.findUniqueOrThrow({ where: { applicationId: row.id } })).coveredChecks, [PAN, "DRIVING_LICENSE", "AADHAAR"], "the seat also covers the Aadhaar the journey adds");
+  assert.deepEqual((await db.prepaidCase.findUniqueOrThrow({ where: { applicationId: row.id } })).coveredChecks, ["AADHAAR", PAN, "DRIVING_LICENSE"], "Aadhaar is in every bundle, seats too");
   const after = await seatsOf(adminA);
   assert.equal(after.used, before.used + 1);
   assert.equal(after.reserved, before.reserved - 1);
@@ -439,4 +439,27 @@ test("invite redemption: only the invited number, through the worker app, opens 
   // The partner sees the case; an invite token is useless with any other key.
   assert.ok((await as(adminA, "get", "/v1/admin/cases")).body.items.some((item: { id: string }) => item.id === row.id));
   assert.equal((await api().get("/v1/worker/case").set("x-api-key", app.rawKey).set("x-worker-token", signedIn(invitee))).body.applicationId === row.id, false, "the app's own sign-in is a different (Liwip) case");
+
+  // Extra checks: the person buys them first, then adds them. The company paid only for its bundle.
+  const asInvitee = (method: "get" | "post", path: string) => api()[method](path).set("x-api-key", appKey).set("x-worker-token", redeemed.workerToken);
+  assert.equal((await asInvitee("post", "/v1/worker/billing/quotes").send({ packageCode: RIDER })).status, 400, "the bundle is the company's");
+  ok(await asInvitee("post", "/v1/worker/case/consent").send({ textVersion: "test-1", items: ["case", "identity"] }));
+  const unpaid = await asInvitee("post", "/v1/worker/case/checks/add").send({ checks: ["PAN"] });
+  assert.equal(unpaid.status, 409, "an extra check is paid for before it is added");
+  ok(await as(keystone, "post", "/v1/admin/check-rates").send({ checkType: "PAN", unitPricePaise: 5_000 }), 201);
+  const offered = ok(await asInvitee("get", "/v1/worker/billing/extras")).body.items.find((item: { check: string }) => item.check === "PAN");
+  assert.deepEqual(offered, { check: "PAN", unitPricePaise: 5_000, paid: false });
+  const extras = ok(await asInvitee("post", "/v1/worker/billing/extras/quotes").send({ checks: ["PAN"] }), 201).body;
+  assert.equal(extras.subtotalPaise, 5_000, "only the check: the bundle is already paid");
+  assert.equal(extras.lines[0].kind, "EXTRAS");
+  const extrasOrder = ok(await asInvitee("post", "/v1/worker/billing/orders").set("Idempotency-Key", `idem_${tag}_extras_1`).send({ quoteId: extras.id })).body;
+  gatewayOrders.get(extrasOrder.orderId)!.order_status = "PAID";
+  ok(await webhook(extrasOrder.orderId));
+  const prepaid = await db.prepaidCase.findUniqueOrThrow({ where: { applicationId: row.id } });
+  assert.equal(prepaid.source, "SEAT", "the seat still pays for the bundle");
+  assert.ok((prepaid.coveredChecks as string[]).includes("PAN"));
+  assert.deepEqual(ok(await asInvitee("get", "/v1/worker/case")).body.paidExtras, ["PAN"]);
+  const added = ok(await asInvitee("post", "/v1/worker/case/checks/add").send({ checks: ["PAN"] })).body;
+  assert.ok(added.selectedChecks.includes("PAN"));
+  assert.deepEqual(added.paidExtras, []);
 });

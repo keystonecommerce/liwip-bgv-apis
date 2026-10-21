@@ -27,6 +27,8 @@ export interface LineInput {
   addOns: AddOnItem[];
   /** A negotiated price for this partner, replacing the list price. */
   partnerUnitPaise?: number | null;
+  /** Checks bought for a case under way: the case's package is already paid, so only the add-ons are charged. */
+  extras?: boolean;
 }
 
 export interface DiscountTier {
@@ -47,6 +49,8 @@ export interface TaxContext {
 }
 
 export interface PricedLine {
+  /** PACKAGE, or EXTRAS: add-on checks only, on the case's own package. */
+  kind: "PACKAGE" | "EXTRAS";
   packageId: string;
   packageCode: string;
   packageVersion: number;
@@ -95,20 +99,21 @@ export function priceOrder(inputs: readonly LineInput[], tiers: readonly Discoun
   if (!inputs.length) throw new Error("An order needs at least one line");
   const lines = inputs.map((input): PricedLine => {
     if (!Number.isInteger(input.quantity) || input.quantity < 1) throw new Error("Quantity must be a positive whole number");
-    const unitPricePaise = input.partnerUnitPaise ?? input.item.listPricePaise;
+    const unitPricePaise = input.extras ? 0 : input.partnerUnitPaise ?? input.item.listPricePaise;
     const addOns = input.addOns.map((addOn) => ({ checkType: addOn.checkType, checkRateId: addOn.checkRateId, unitPricePaise: addOn.unitPricePaise }));
     const packageGross = unitPricePaise * input.quantity;
     const addOnPaise = addOns.reduce((sum, addOn) => sum + addOn.unitPricePaise, 0) * input.quantity;
-    const tier = tierFor(tiers, input.item.code, input.quantity);
+    const tier = input.extras ? null : tierFor(tiers, input.item.code, input.quantity);
     const discountBps = tier?.percentOffBps ?? 0;
     const discountPaise = Math.round((packageGross * discountBps) / 10_000);
     return {
+      kind: input.extras ? "EXTRAS" : "PACKAGE",
       packageId: input.item.id,
       packageCode: input.item.code,
       packageVersion: input.item.version,
       name: input.item.name,
       quantity: input.quantity,
-      unitListPaise: input.item.listPricePaise,
+      unitListPaise: input.extras ? 0 : input.item.listPricePaise,
       unitPricePaise,
       addOns,
       grossPaise: packageGross + addOnPaise,

@@ -39,7 +39,7 @@ export interface SelfieUpload { buffer: Buffer; originalname: string; mimetype: 
 export interface DetailsInput { fullName?: string; dateOfBirth?: string; fatherName?: string; address?: string }
 
 /** A selectable check is offered only when every Surepass product behind it is enabled. */
-function isSelectableAvailable(check: SelectableCheck): boolean {
+export function isSelectableAvailable(check: SelectableCheck): boolean {
   if (check === "AADHAAR") return enabledProducts().has("aadhaar-ovse");
   return SELECTABLE_CHECKS[check].types.every((type) => isCheckAvailable(type));
 }
@@ -88,8 +88,10 @@ export class WorkerCaseService {
     const { application, owner } = await this.current(worker, client);
     if (application.status !== "DRAFT") throw new ConflictException("Checks are fixed once consent is given");
     if (application.data.sponsor) throw new ConflictException(`${application.data.sponsor.partnerName} chose the checks for you`);
-    const chosen = [...new Set((Array.isArray(input?.checks) ? input.checks : []).map((item) => String(item).toUpperCase()))];
-    if (!chosen.length) throw new BadRequestException("Choose at least one check");
+    const picked = (Array.isArray(input?.checks) ? input.checks : []).map((item) => String(item).toUpperCase());
+    if (!picked.length) throw new BadRequestException("Choose at least one check");
+    // Aadhaar is in every case and every bundle: always first, never left out.
+    const chosen = [...new Set([...(isSelectableAvailable("AADHAAR") ? ["AADHAAR"] : []), ...picked])];
     for (const check of chosen) {
       if (!isSelectableCheck(check) || !isSelectableAvailable(check)) throw new BadRequestException(`${check} is not available`);
       const requires = SELECTABLE_CHECKS[check].requires;
@@ -140,6 +142,10 @@ export class WorkerCaseService {
       const requires = SELECTABLE_CHECKS[check].requires;
       if (requires && !existing.has(requires) && !added.includes(requires)) throw new BadRequestException(`${check} needs ${requires} as well`);
     }
+    // An extra check is bought first (POST /v1/worker/billing/extras/quotes), then added. Whoever paid for the case paid only for its bundle.
+    const paid = new Set(await this.paidTypes(application.id));
+    const unpaid = added.filter((check) => SELECTABLE_CHECKS[check as SelectableCheck].types.some((type) => !paid.has(type)));
+    if (unpaid.length) throw new ConflictException(`Pay for ${unpaid.join(", ")} first`);
     const items = new Set((Array.isArray(input?.items) ? input.items : []).map(String));
     const already = new Set(application.data.consentItems ?? []);
     const needed = [...new Set(added.map((check) => SELECTABLE_CHECKS[check as SelectableCheck].consent))].filter((item) => !already.has(item));
@@ -348,6 +354,12 @@ export class WorkerCaseService {
     return application;
   }
 
+  /** Check types already paid for on this case: its bundle (or seat) and any extras bought. */
+  private async paidTypes(applicationId: string): Promise<string[]> {
+    const prepaid = await this.prisma.prepaidCase.findUnique({ where: { applicationId }, select: { coveredChecks: true } });
+    return Array.isArray(prepaid?.coveredChecks) ? (prepaid.coveredChecks as string[]) : [];
+  }
+
   private owner(client: ClientContext): ApplicationOwner {
     // A case opened through a partner's invite belongs to the partner's program, not the worker app's key.
     return { tenantId: client.tenantId, clientId: client.clientId, apiKeyId: client.actingForInvite ? undefined : client.apiKeyId };
@@ -359,6 +371,7 @@ export class WorkerCaseService {
     const rows = await this.store.getVerificationsForApplication(application.id, owner);
     const selected = data.selectedChecks ?? [];
     const courtReady = Boolean(data.personal.nameAsAadhaar && data.criminal?.fatherName && data.personal.submittedAddress);
+    const paid = new Set(await this.paidTypes(application.id));
     return {
       applicationId: application.id,
       cardNumber: application.card?.cardNumber ?? (await this.store.getCardNumber(application.id)) ?? null,
@@ -374,6 +387,8 @@ export class WorkerCaseService {
       // Invited by a company: it chose the checks and pays for them.
       sponsor: data.sponsor ? { partnerName: data.sponsor.partnerName, packageName: data.sponsor.packageName } : null,
       checksFixed: Boolean(data.sponsor),
+      // Extras bought but not added yet (paid, then the app closed before consent): add them next.
+      paidExtras: application.status === "DRAFT" ? [] : (Object.keys(SELECTABLE_CHECKS) as SelectableCheck[]).filter((check) => !selected.includes(check) && SELECTABLE_CHECKS[check].types.every((type) => paid.has(type))),
       consent: data.consent?.granted ? { textVersion: data.consent.textVersion, grantedAt: data.consent.grantedAt, items: data.consentItems ?? [] } : null,
       details: {
         source: data.identity?.status === "VERIFIED" ? "AADHAAR" : data.personal.nameAsAadhaar ? "WORKER" : null,

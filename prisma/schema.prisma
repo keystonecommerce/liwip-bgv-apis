@@ -809,6 +809,8 @@ model OrderLine {
   packageId      String
   packageCode    String
   packageVersion Int
+  /// PACKAGE | EXTRAS (checks bought for a case under way, on that case's package)
+  kind           String              @default("PACKAGE")
   quantity       Int
   unitListPaise  Int
   unitPricePaise Int

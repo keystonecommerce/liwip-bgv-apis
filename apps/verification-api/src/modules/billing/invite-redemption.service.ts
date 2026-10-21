@@ -7,7 +7,7 @@ import { PrismaService } from "../../common/database/prisma.service";
 import type { ApplicationSchema } from "../../domain/verification.types";
 import { newCardNumber } from "../verifications/verification.repository";
 import { isSelectableCheck, SELECTABLE_CHECKS, type SelectableCheck } from "../worker-cases/worker-case.inputs";
-import { checkTypesOf } from "./catalog.service";
+import { checkTypesOf, includedChecks } from "./catalog.service";
 import { SeatsService } from "./seats.service";
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -72,8 +72,8 @@ export class InviteRedemptionService {
       if (!pkg) throw new ConflictException("The package for this link is missing");
       const types = checkTypesOf(pkg.checks);
       const selectedChecks = journeyChecks(types);
-      // The seat pays for the package and for what the journey adds (Aadhaar, both face steps): none is billed again as usage.
-      const covered = [...new Set([...types, ...selectedChecks.flatMap((check) => SELECTABLE_CHECKS[check].types)])];
+      // The seat pays for the bundle (the package plus Aadhaar) and both face steps the journey runs.
+      const covered = [...new Set([...includedChecks(pkg.checks), ...selectedChecks.flatMap((check) => SELECTABLE_CHECKS[check].types)])];
       const sponsor = { inviteId: invite.id, partnerName: invite.tenant.name, packageName: pkg.name };
       const data: ApplicationSchema = {
         personal: { phone: worker.phone.slice(2), nameAsAadhaar: invite.name, declaredName: invite.name, dateOfBirth: "" },

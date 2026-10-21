@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { AuditService } from "../../common/audit/audit.service";
 import { PrismaService } from "../../common/database/prisma.service";
 import { billingConfig } from "./billing-config";
-import { checkTypesOf } from "./catalog.service";
+import { includedChecks } from "./catalog.service";
 import { issueInvoice } from "./invoices";
 import { CashfreeError, PAYMENT_GATEWAY, PaymentGateway } from "./cashfree.client";
 import { newOrderCode, ORDER_CODE, refundId } from "./order-code";
@@ -74,7 +74,7 @@ export class OrdersService implements OnModuleInit, OnModuleDestroy {
             cgstPaise: quote.cgstPaise, sgstPaise: quote.sgstPaise, igstPaise: quote.igstPaise, totalPaise: quote.totalPaise, idempotencyKey: idempotencyKey!, expiresAt,
             lines: {
               create: lines.map((line) => ({
-                id: `oline_${randomUUID()}`, tenantId: quote.tenantId, packageId: line.packageId, packageCode: line.packageCode, packageVersion: line.packageVersion,
+                id: `oline_${randomUUID()}`, tenantId: quote.tenantId, kind: line.kind ?? "PACKAGE", packageId: line.packageId, packageCode: line.packageCode, packageVersion: line.packageVersion,
                 quantity: line.quantity, unitListPaise: line.unitListPaise, unitPricePaise: line.unitPricePaise, addOns: line.addOns as unknown as Prisma.InputJsonValue,
                 discountRuleId: line.discountRuleId, discountBps: line.discountBps, discountPaise: line.discountPaise, packagePaise: line.packagePaise, addOnPaise: line.addOnPaise, lineTotalPaise: line.lineTotalPaise
               }))
@@ -166,6 +166,17 @@ export class OrdersService implements OnModuleInit, OnModuleDestroy {
       await issueInvoice(tx, { orderId: order.id, tenantId: order.tenantId, individual: order.buyerType !== "PARTNER", taxablePaise: order.taxablePaise, cgstPaise: order.cgstPaise, sgstPaise: order.sgstPaise, igstPaise: order.igstPaise, totalPaise: order.totalPaise });
       if (order.buyerType === "PARTNER") {
         for (const line of order.lines) await this.seats.purchase(tx, line);
+      } else if (order.applicationId && order.lines[0]?.kind === "EXTRAS") {
+        // Extra checks the person bought for their case: added to what is paid, nothing else changes.
+        const line = order.lines[0];
+        const bought = (line.addOns as unknown as AddOnItem[]).map((addOn) => addOn.checkType);
+        const current = await tx.prepaidCase.findUnique({ where: { applicationId: order.applicationId }, select: { coveredChecks: true } });
+        const covered = [...new Set([...((current?.coveredChecks as string[] | undefined) ?? []), ...bought])];
+        await tx.prepaidCase.upsert({
+          where: { applicationId: order.applicationId },
+          create: { applicationId: order.applicationId, tenantId: order.tenantId, source: "ORDER", orderId, packageCode: line.packageCode, packageVersion: line.packageVersion, coveredChecks: covered },
+          update: { coveredChecks: covered }
+        });
       } else if (order.applicationId) {
         const application = await tx.application.findUnique({ where: { id: order.applicationId }, select: { data: true } });
         const line = order.lines[0];
@@ -176,7 +187,7 @@ export class OrdersService implements OnModuleInit, OnModuleDestroy {
         });
         // The package's checks and the paid add-ons are covered: never billed again as usage.
         const pkg = await tx.verificationPackage.findUniqueOrThrow({ where: { id: line.packageId }, select: { checks: true } });
-        const covered = [...new Set([...checkTypesOf(pkg.checks), ...(line.addOns as unknown as AddOnItem[]).map((addOn) => addOn.checkType)])];
+        const covered = [...new Set([...includedChecks(pkg.checks), ...(line.addOns as unknown as AddOnItem[]).map((addOn) => addOn.checkType)])];
         await tx.prepaidCase.upsert({
           where: { applicationId: order.applicationId },
           create: { applicationId: order.applicationId, tenantId: order.tenantId, source: "ORDER", orderId, packageCode: line.packageCode, packageVersion: line.packageVersion, coveredChecks: covered },

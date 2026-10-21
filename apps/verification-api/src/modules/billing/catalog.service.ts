@@ -48,6 +48,12 @@ type PackageRow = Prisma.VerificationPackageGetPayload<object>;
 /** The check types in a package's checks JSON. */
 export const checkTypesOf = (checks: unknown): string[] => (Array.isArray(checks) ? checks.map((item) => String((item as { type?: unknown })?.type ?? "")).filter(Boolean) : []);
 
+/** In every package whatever it lists: the Liwip app starts every case with Aadhaar. Never an add-on or a usage charge. */
+export const BUNDLED_CHECKS = ["AADHAAR"] as const;
+
+/** What a package's price pays for: its own checks plus the bundled ones. */
+export const includedChecks = (checks: unknown): string[] => [...new Set([...BUNDLED_CHECKS, ...checkTypesOf(checks)])];
+
 export function packageCode(value: unknown): string {
   const code = String(value ?? "").trim().toUpperCase();
   if (!CODE.test(code)) throw new BadRequestException("Package code must be 2 to 40 capital letters, digits or _");
@@ -187,7 +193,7 @@ export class CatalogService {
     const types = [...new Set(addOnChecks.map(checkType))];
     const base = await this.prisma.verificationPackage.findFirst({ where: { code, kind: "BASE" }, orderBy: { version: "desc" } });
     if (!base) throw new NotFoundException(`${code} not found`);
-    const included = types.filter((type) => checkTypesOf(base.checks).includes(type));
+    const included = types.filter((type) => includedChecks(base.checks).includes(type));
     if (included.length) throw new BadRequestException(`Already in ${code}: ${included.join(", ")}`);
     const priced = new Set((await this.prisma.checkRate.findMany({ where: { tenantId: null, checkType: { in: types }, isActive: true }, select: { checkType: true } })).map((row) => row.checkType));
     const unpriced = types.filter((type) => !priced.has(type));
@@ -304,7 +310,7 @@ export class CatalogService {
         const partnerPrice = partnerPrices.find((price) => price.packageCode === row.code);
         return {
           code: row.code, version: row.version, name: row.name, description: row.description, role: row.role, module: row.module,
-          checks: row.checks, listPricePaise: row.listPricePaise, unitPricePaise: partnerPrice?.unitPricePaise ?? row.listPricePaise,
+          checks: row.checks, includedChecks: includedChecks(row.checks), listPricePaise: row.listPricePaise, unitPricePaise: partnerPrice?.unitPricePaise ?? row.listPricePaise,
           addOns: tenantId ? [] : links.filter((link) => link.basePackageCode === row.code).flatMap((link) => {
             const rate = listRate(link.addOnCode);
             return rate ? [{ checkType: link.addOnCode, unitPricePaise: rate.unitPricePaise }] : [];
@@ -325,7 +331,7 @@ export class CatalogService {
     const item = (row: PackageRow): PricedItem => ({ id: row.id, code: row.code, version: row.version, name: row.name, listPricePaise: row.listPricePaise ?? 0 });
     return {
       published: new Map(rows.filter((row) => row.listPricePaise).map((row) => [row.code, { row, item: item(row) }])),
-      allowedAddOns: (base: string) => new Set(links.filter((link) => link.basePackageCode === base).map((link) => link.addOnCode)),
+      allowedAddOns: (base: string) => new Set(links.filter((link) => link.basePackageCode === base && !(BUNDLED_CHECKS as readonly string[]).includes(link.addOnCode)).map((link) => link.addOnCode)),
       addOn: (type: string): AddOnItem | null => { const rate = pickRate(rateRows, null, type, now); return rate ? { checkType: type, checkRateId: rate.id, unitPricePaise: rate.unitPricePaise } : null; },
       partnerPrice: (code: string) => partnerPrices.find((price) => price.packageCode === code)?.unitPricePaise ?? null,
       tiers: await this.tiersFor(tenantId, now)

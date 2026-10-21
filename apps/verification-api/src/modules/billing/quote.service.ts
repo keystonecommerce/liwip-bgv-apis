@@ -51,10 +51,29 @@ export class QuoteService {
       return { item: base.item, quantity: quantity as number, addOns, partnerUnitPaise: inputs.partnerPrice(code) };
     });
 
+    return this.save(buyer, lines, inputs.tiers);
+  }
+
+  /**
+   * Extra checks a person buys for their case under way, at each check's list price. The case's
+   * package is already paid (by them or a company), so the line carries only the checks.
+   */
+  async createExtras(buyer: Buyer & { applicationId: string }, pkg: { id: string; code: string; version: number; name: string }, types: string[]) {
+    if (!types.length) throw new BadRequestException("Choose at least one check");
+    const inputs = await this.catalog.pricingInputs(null, [], types);
+    const addOns = types.map((type) => {
+      const addOn = inputs.addOn(type);
+      if (!addOn) throw new BadRequestException(`${type} can't be bought yet`);
+      return addOn;
+    });
+    return this.save(buyer, [{ item: { id: pkg.id, code: pkg.code, version: pkg.version, name: pkg.name, listPricePaise: 0 }, quantity: 1, addOns, extras: true }], []);
+  }
+
+  private async save(buyer: Buyer, lines: LineInput[], tiers: Awaited<ReturnType<CatalogService["pricingInputs"]>>["tiers"]) {
     const tenant = await this.prisma.tenant.findUnique({ where: { id: buyer.tenantId }, select: { address: true, status: true } });
     if (!tenant || tenant.status !== "ACTIVE") throw new NotFoundException("Buyer not found");
     const config = billingConfig();
-    const priced = priceOrder(lines, inputs.tiers, { rateBps: config.gstRateBps, sellerState: config.sellerState, buyerState: buyer.type === "PARTNER" ? stateOf(tenant.address) : null });
+    const priced = priceOrder(lines, tiers, { rateBps: config.gstRateBps, sellerState: config.sellerState, buyerState: buyer.type === "PARTNER" ? stateOf(tenant.address) : null });
     const quote = await this.prisma.quote.create({
       data: {
         id: `quote_${randomUUID()}`, buyerType: buyer.type, tenantId: buyer.tenantId, clientId: buyer.clientId ?? null, applicationId: buyer.applicationId ?? null,
