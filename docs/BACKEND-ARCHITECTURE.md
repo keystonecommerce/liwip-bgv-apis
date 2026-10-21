@@ -41,6 +41,14 @@ apps/verification-api/src/
   main.ts                       HTTP bootstrap
 ```
 
+## Admin panel access
+
+Staff (Keystone, partner staff, vendors, verifiers) use the admin panel API under `/v1/admin/*`
+with httpOnly cookie sessions (email OTP or passkeys), CSRF tokens and role bindings resolved
+by one guard (`AdminAccessGuard`). Partner staff read through the scoped Prisma client only.
+See [ADMIN-ACCESS.md](ADMIN-ACCESS.md) for the model, roles, permissions, cookie/CSRF setup
+and the route list. The `X-Admin-Key` `/admin/*` routes are deprecated but still work.
+
 ## Tenant isolation rules
 
 - Every application has required `tenantId` and `clientId` foreign keys.
@@ -50,6 +58,7 @@ apps/verification-api/src/
 - A cross-tenant lookup returns `404` so it does not disclose whether another tenant's ID exists.
 - Route scopes include `packages:read`, `applications:write`, `applications:read`, `verifications:retry`, `documents:write` and `documents:read` plus provider-specific scopes.
 - Internal worker and provider-diagnostic routes are disabled in production by default.
+- `Verification`, `AadhaarPhoto`, `WorkerPhoto` and `CardScan` carry their own `tenantId`/`clientId` (composite foreign key to the parent), so `withTenantScope` filters every table directly.
 
 ## Adding a feature
 
