@@ -22,6 +22,8 @@ export interface PackageInput {
   listPricePaise?: number;
   checks?: unknown;
   displayOrder?: number;
+  /** Most seats one order may buy; null removes the limit. */
+  maxSeatsPerOrder?: number | null;
 }
 
 export interface DiscountRuleInput {
@@ -93,9 +95,15 @@ const activeAt = (now: Date) => ({
   ]
 });
 
+/** Packages a buyer may see: on sale to everyone, plus a partner's own custom bundles. */
+const visibleTo = (tenantId: string | null): Prisma.VerificationPackageWhereInput => (tenantId ? { OR: [{ tenantId: null }, { tenantId }] } : { tenantId: null });
+
+const seatLimit = (value: unknown) => (value === undefined ? undefined : value === null ? null : wholeNumber(value, "maxSeatsPerOrder", 1, 100_000));
+
 const view = (row: PackageRow) => ({
   id: row.id, code: row.code, version: row.version, name: row.name, description: row.description, role: row.role, module: row.module,
   kind: row.kind, status: row.status, listPricePaise: row.listPricePaise, checks: row.checks, displayOrder: row.displayOrder,
+  tenantId: row.tenantId, maxSeatsPerOrder: row.maxSeatsPerOrder,
   publishedAt: row.publishedAt, updatedAt: row.updatedAt
 });
 
@@ -130,7 +138,7 @@ export class CatalogService {
         module: oneOf(input.module ?? "PEOPLE", "module", MODULES), kind,
         listPricePaise: paise(input.listPricePaise, "listPricePaise"), priceInr: Math.round(paise(input.listPricePaise, "listPricePaise") / 100),
         checks: checksOf(input.checks), displayOrder: input.displayOrder === undefined ? 100 : wholeNumber(input.displayOrder, "displayOrder", 0, 10_000),
-        createdById: admin.user.id
+        maxSeatsPerOrder: seatLimit(input.maxSeatsPerOrder) ?? null, createdById: admin.user.id
       }
     });
     admin.audit = { resourceType: "VerificationPackage", resourceId: row.id, metadata: { code, version: 1 } };
@@ -152,12 +160,13 @@ export class CatalogService {
       module: input.module === undefined ? base.module : oneOf(input.module, "module", MODULES),
       listPricePaise, priceInr: listPricePaise === null ? base.priceInr : Math.round(listPricePaise / 100),
       checks: input.checks === undefined ? (base.checks as Prisma.InputJsonValue) : checksOf(input.checks),
-      displayOrder: input.displayOrder === undefined ? base.displayOrder : wholeNumber(input.displayOrder, "displayOrder", 0, 10_000)
+      displayOrder: input.displayOrder === undefined ? base.displayOrder : wholeNumber(input.displayOrder, "displayOrder", 0, 10_000),
+      maxSeatsPerOrder: seatLimit(input.maxSeatsPerOrder) === undefined ? base.maxSeatsPerOrder : seatLimit(input.maxSeatsPerOrder)
     };
     const row = draft
       ? await this.prisma.verificationPackage.update({ where: { id: draft.id }, data: changes })
       : await this.prisma.verificationPackage.create({
-          data: { ...changes, id: `package_${randomUUID()}`, code, version: await this.nextVersion(code), kind: base.kind, status: "DRAFT", isActive: false, createdById: admin.user.id, advertisedCheckCount: base.advertisedCheckCount, targetWorkforce: base.targetWorkforce }
+          data: { ...changes, id: `package_${randomUUID()}`, code, version: await this.nextVersion(code), kind: base.kind, tenantId: base.tenantId, status: "DRAFT", isActive: false, createdById: admin.user.id, advertisedCheckCount: base.advertisedCheckCount, targetWorkforce: base.targetWorkforce }
         });
     admin.audit = { resourceType: "VerificationPackage", resourceId: row.id, metadata: { code, version: row.version } };
     return view(row);
@@ -296,7 +305,7 @@ export class CatalogService {
    */
   async catalogFor(tenantId: string | null, now = new Date()) {
     const [packages, links, partnerPrices, tiers, rateRows] = await Promise.all([
-      this.prisma.verificationPackage.findMany({ where: { status: "PUBLISHED", kind: "BASE" }, orderBy: [{ displayOrder: "asc" }, { code: "asc" }] }),
+      this.prisma.verificationPackage.findMany({ where: { status: "PUBLISHED", kind: "BASE", ...visibleTo(tenantId) }, orderBy: [{ displayOrder: "asc" }, { code: "asc" }] }),
       this.prisma.packageAddOn.findMany({ orderBy: { displayOrder: "asc" } }),
       tenantId ? this.prisma.partnerPrice.findMany({ where: { tenantId, ...activeAt(now) }, orderBy: { createdAt: "desc" } }) : Promise.resolve([]),
       this.tiersFor(tenantId, now),
@@ -310,6 +319,7 @@ export class CatalogService {
         const partnerPrice = partnerPrices.find((price) => price.packageCode === row.code);
         return {
           code: row.code, version: row.version, name: row.name, description: row.description, role: row.role, module: row.module,
+          custom: Boolean(row.tenantId), maxSeatsPerOrder: row.maxSeatsPerOrder,
           checks: row.checks, includedChecks: includedChecks(row.checks), listPricePaise: row.listPricePaise, unitPricePaise: partnerPrice?.unitPricePaise ?? row.listPricePaise,
           addOns: tenantId ? [] : links.filter((link) => link.basePackageCode === row.code).flatMap((link) => {
             const rate = listRate(link.addOnCode);
@@ -324,7 +334,7 @@ export class CatalogService {
 
   /** Everything the quote needs for the requested codes, at the published versions. */
   async pricingInputs(tenantId: string | null, codes: string[], addOnTypes: string[] = [], now = new Date()) {
-    const rows = await this.prisma.verificationPackage.findMany({ where: { status: "PUBLISHED", kind: "BASE", code: { in: codes } } });
+    const rows = await this.prisma.verificationPackage.findMany({ where: { status: "PUBLISHED", kind: "BASE", code: { in: codes }, ...visibleTo(tenantId) } });
     const links = await this.prisma.packageAddOn.findMany({ where: { basePackageCode: { in: codes } } });
     const partnerPrices = tenantId ? await this.prisma.partnerPrice.findMany({ where: { tenantId, packageCode: { in: codes }, ...activeAt(now) }, orderBy: { createdAt: "desc" } }) : [];
     const rateRows = addOnTypes.length ? await this.rates.rowsFor(null, addOnTypes) : [];

@@ -88,6 +88,20 @@ For each line, in this order:
 
 A quote stores every input used (rule ids, prices, versions), so an invoice can always be explained.
 
+## 3a. Custom bundles
+
+A partner can build its own bundle and ask Keystone for a price, all in the admin apps.
+
+1. **Ask (Business, `billing.buy`):** a name, the checks (from `GET /v1/admin/bundle-requests/checks`: what the platform can run today), expected seats and a note. Aadhaar is in every bundle, so it is not a choice. Status `REQUESTED`.
+2. **Evaluate (Control, `packages.manage`):** `GET …/evaluation` lists each check with Keystone's cost (`CheckCost`, set at `PUT /v1/admin/check-costs/:checkType`), the list price and any partner price, with totals and the checks still missing a cost. Partner routes never return costs.
+3. **Price:** `POST …/price` with `{ unitPricePaise, maxSeatsPerOrder?, validDays? (30), note? }`. Status `PRICED`; Keystone can change the price until it is accepted, or `POST …/reject` with a note.
+4. **Accept or decline (Business):** accepting (`POST …/accept`, recent sign-in) creates a private package (`VerificationPackage.tenantId`, code `CUSTOM_…`) at that price and seat limit. Declining a price makes it `DECLINED`; withdrawing a request without one makes it `WITHDRAWN`. An expired price can't be accepted.
+5. **Buy:** the bundle shows on that partner's Buy page only and is bought as seats like any package. The agreed price gets no bulk discount on top.
+
+**Seat limit:** every package can have `maxSeatsPerOrder` (set on the package, or in the bundle's price). A quote over it is refused with "Up to N seats per order".
+
+**Private bundles stay private:** the catalog, quotes, the partner API's package list and case creation only ever see packages on sale to everyone plus the caller's own bundles.
+
 ## 4. Cashfree
 
 **Config** (`.env`, never sent to the browser):

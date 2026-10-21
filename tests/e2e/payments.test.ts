@@ -463,3 +463,41 @@ test("invite redemption: only the invited number, through the worker app, opens 
   assert.ok(added.selectedChecks.includes("PAN"));
   assert.deepEqual(added.paidExtras, []);
 });
+
+test("custom bundle: a partner asks, Keystone prices it with a seat limit, only that partner can buy it", async () => {
+  // Manual checks are always available, so the test does not depend on Surepass products.
+  const asked = ok(await as(adminA, "post", "/v1/admin/bundle-requests").send({ name: `Night shift ${tag}`, checks: ["CURRENT_ADDRESS", "REFERENCE_CHECK", "AADHAAR"], expectedSeats: 200, note: "Warehouse staff" }), 201).body;
+  assert.equal(asked.status, "REQUESTED");
+  assert.deepEqual(asked.checks, ["CURRENT_ADDRESS", "REFERENCE_CHECK"], "Aadhaar is in every bundle, never a choice");
+  assert.equal((await as(adminB, "get", `/v1/admin/bundle-requests/${asked.id}`)).status, 404, "another partner cannot see it");
+  assert.equal((await as(adminA, "get", `/v1/admin/bundle-requests/${asked.id}/evaluation`)).status, 403, "costs are Keystone's");
+  assert.equal((await as(adminA, "post", `/v1/admin/bundle-requests/${asked.id}/accept`)).status, 409, "nothing to accept before a price");
+
+  ok(await as(keystone, "put", "/v1/admin/check-costs/CURRENT_ADDRESS").send({ unitCostPaise: 9_000, note: "Field visit" }));
+  const evaluation = ok(await as(keystone, "get", `/v1/admin/bundle-requests/${asked.id}/evaluation`)).body;
+  assert.deepEqual(evaluation.lines.map((line: { checkType: string }) => line.checkType), ["AADHAAR", "CURRENT_ADDRESS", "REFERENCE_CHECK"]);
+  assert.equal(evaluation.lines[1].costPaise, 9_000);
+  assert.ok(evaluation.missingCosts.includes("REFERENCE_CHECK"));
+
+  assert.equal((await as(adminA, "post", `/v1/admin/bundle-requests/${asked.id}/price`).send({ unitPricePaise: 30_000 })).status, 403, "only Keystone prices");
+  const priced = ok(await as(keystone, "post", `/v1/admin/bundle-requests/${asked.id}/price`).send({ unitPricePaise: 30_000, maxSeatsPerOrder: 50, validDays: 7, note: "For up to 50 a month" })).body;
+  assert.equal(priced.status, "PRICED");
+  const seen = ok(await as(adminA, "get", `/v1/admin/bundle-requests/${asked.id}`)).body;
+  assert.deepEqual([seen.offer.unitPricePaise, seen.offer.maxSeatsPerOrder], [30_000, 50]);
+  assert.doesNotMatch(JSON.stringify(seen), /cost/i, "a partner never sees Keystone's costs");
+
+  const accepted = ok(await as(adminA, "post", `/v1/admin/bundle-requests/${asked.id}/accept`)).body;
+  assert.equal(accepted.status, "ACCEPTED");
+  const mine = ok(await as(adminA, "get", "/v1/admin/catalog")).body.packages.find((item: { name: string }) => item.name === `Night shift ${tag}`);
+  assert.ok(mine?.custom);
+  assert.equal(mine.unitPricePaise, 30_000);
+  assert.equal(mine.maxSeatsPerOrder, 50);
+  assert.equal(ok(await as(adminB, "get", "/v1/admin/catalog")).body.packages.some((item: { code: string }) => item.code === mine.code), false, "not on sale to anyone else");
+
+  assert.equal((await as(adminA, "post", "/v1/admin/quotes").send({ lines: [{ packageCode: mine.code, quantity: 51 }] })).status, 400, "the seat limit per order");
+  const quote = ok(await as(adminA, "post", "/v1/admin/quotes").send({ lines: [{ packageCode: mine.code, quantity: 50 }] }), 201).body;
+  assert.equal(quote.lines[0].unitPricePaise, 30_000);
+  assert.equal(quote.discountPaise, 0, "the agreed price has no bulk discount on top");
+  assert.equal((await as(adminB, "post", "/v1/admin/quotes").send({ lines: [{ packageCode: mine.code, quantity: 1 }] })).status, 404);
+  assert.equal((await as(adminA, "post", `/v1/admin/bundle-requests/${asked.id}/decline`)).status, 409, "closed once accepted");
+});

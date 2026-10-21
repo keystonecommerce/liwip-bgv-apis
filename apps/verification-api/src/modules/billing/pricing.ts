@@ -29,6 +29,8 @@ export interface LineInput {
   partnerUnitPaise?: number | null;
   /** Checks bought for a case under way: the case's package is already paid, so only the add-ons are charged. */
   extras?: boolean;
+  /** A price agreed for one partner's custom bundle: no bulk discount on top. */
+  fixedPrice?: boolean;
 }
 
 export interface DiscountTier {
@@ -103,7 +105,7 @@ export function priceOrder(inputs: readonly LineInput[], tiers: readonly Discoun
     const addOns = input.addOns.map((addOn) => ({ checkType: addOn.checkType, checkRateId: addOn.checkRateId, unitPricePaise: addOn.unitPricePaise }));
     const packageGross = unitPricePaise * input.quantity;
     const addOnPaise = addOns.reduce((sum, addOn) => sum + addOn.unitPricePaise, 0) * input.quantity;
-    const tier = input.extras ? null : tierFor(tiers, input.item.code, input.quantity);
+    const tier = input.extras || input.fixedPrice ? null : tierFor(tiers, input.item.code, input.quantity);
     const discountBps = tier?.percentOffBps ?? 0;
     const discountPaise = Math.round((packageGross * discountBps) / 10_000);
     return {

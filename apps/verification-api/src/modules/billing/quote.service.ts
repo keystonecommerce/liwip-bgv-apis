@@ -42,13 +42,17 @@ export class QuoteService {
       if (!base) throw new NotFoundException(`${code} is not on sale`);
       const quantity = buyer.type === "INDIVIDUAL" ? 1 : line.quantity;
       if (!Number.isInteger(quantity) || (quantity as number) < 1 || (quantity as number) > 100_000) throw new BadRequestException(`${code}: quantity must be 1 to 100000`);
+      const limit = base.row.maxSeatsPerOrder;
+      if (limit && (quantity as number) > limit) throw new BadRequestException(`${base.row.name}: up to ${limit.toLocaleString("en-IN")} seats per order`);
       const allowed = inputs.allowedAddOns(code);
       const addOns = [...new Set(Array.isArray(line.addOns) ? line.addOns.map(checkType) : [])].map((type) => {
         const addOn = allowed.has(type) ? inputs.addOn(type) : null;
         if (!addOn) throw new BadRequestException(`${type} is not offered with ${code}`);
         return addOn;
       });
-      return { item: base.item, quantity: quantity as number, addOns, partnerUnitPaise: inputs.partnerPrice(code) };
+      // A custom bundle's price was agreed for this partner: it is the price, with no discount on top.
+      const custom = Boolean(base.row.tenantId);
+      return { item: base.item, quantity: quantity as number, addOns, partnerUnitPaise: custom ? null : inputs.partnerPrice(code), fixedPrice: custom };
     });
 
     return this.save(buyer, lines, inputs.tiers);

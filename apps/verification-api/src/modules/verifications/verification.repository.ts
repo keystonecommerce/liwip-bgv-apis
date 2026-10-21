@@ -382,15 +382,17 @@ export class VerificationStore {
     }, owner);
   }
 
+  /** Packages on sale to everyone. A partner's custom bundle is never listed here. */
   async listActivePackages(): Promise<VerificationPackageRecord[]> {
     const packages = await this.prisma.verificationPackage.findMany({
-      where: { isActive: true },
+      where: { isActive: true, tenantId: null },
       orderBy: [{ kind: "asc" }, { displayOrder: "asc" }, { version: "desc" }]
     });
     return packages.map((item) => this.mapPackage(item));
   }
 
-  async getPackageByCode(code: string, version?: number): Promise<VerificationPackageRecord | undefined> {
+  /** A package `tenantId` may use: on sale to everyone, or that partner's own custom bundle. */
+  async getPackageByCode(code: string, version: number | undefined, tenantId: string): Promise<VerificationPackageRecord | undefined> {
     const normalizedCode = code.trim().toUpperCase();
     const item = version
       ? await this.prisma.verificationPackage.findUnique({
@@ -400,6 +402,7 @@ export class VerificationStore {
           where: { code: normalizedCode, isActive: true },
           orderBy: { version: "desc" }
         });
+    if (item?.tenantId && item.tenantId !== tenantId) return undefined;
     return item ? this.mapPackage(item) : undefined;
   }
 

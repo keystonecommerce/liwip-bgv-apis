@@ -103,6 +103,7 @@ model Tenant {
   partnerPrices       PartnerPrice[]
   orders              Order[]
   seatLedger          SeatLedger[]
+  bundleRequests      BundleRequest[]
   bulkUploads         BulkUpload[]
   invites             Invite[]
   checkRates          CheckRate[]
@@ -271,6 +272,10 @@ model VerificationPackage {
   status               String        @default("PUBLISHED")
   /// Price per person in paise. priceInr is kept for older readers.
   listPricePaise       Int?
+  /// A partner's own custom bundle (from a BundleRequest): only that partner sees and buys it. Null: on sale to everyone.
+  tenantId             String?
+  /// Most seats one order may buy of this bundle. Null: no limit beyond the order cap.
+  maxSeatsPerOrder     Int?
   publishedAt          DateTime?
   createdById          String?
   createdAt            DateTime      @default(now())
@@ -281,6 +286,7 @@ model VerificationPackage {
   @@unique([code, version])
   @@index([code, status])
   @@index([code, isActive])
+  @@index([tenantId])
 }
 
 model Verification {
@@ -1076,3 +1082,48 @@ model UsageStatement {
   @@unique([tenantId, period])
   @@index([status, dueAt])
 }
+
+/// A partner's own bundle: they pick the checks and ask for a price; Keystone prices it;
+/// accepting it puts a private package on sale to that partner only.
+model BundleRequest {
+  id               String    @id
+  tenantId         String
+  name             String
+  /// [check type]; Aadhaar is always included.
+  checks           Json
+  expectedSeats    Int?
+  note             String?
+  /// REQUESTED | PRICED | ACCEPTED | DECLINED | WITHDRAWN
+  status           String    @default("REQUESTED")
+  requestedById    String
+  /// Keystone's offer: price per seat, the seat limit per order, and until when it holds.
+  unitPricePaise   Int?
+  maxSeatsPerOrder Int?
+  priceValidUntil  DateTime?
+  replyNote        String?
+  pricedById       String?
+  pricedAt         DateTime?
+  /// PARTNER (declined the price or withdrew) | KEYSTONE (won't offer it)
+  closedBy         String?
+  closedAt         DateTime?
+  acceptedById     String?
+  acceptedAt       DateTime?
+  /// The private package made when the price was accepted.
+  packageId        String?   @unique
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  tenant           Tenant    @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, createdAt])
+  @@index([status, createdAt])
+}
+
+/// What one check costs Keystone to run (provider fee or field cost), for pricing bundles. Keystone only; never shown to partners.
+model CheckCost {
+  checkType     String   @id
+  unitCostPaise Int
+  note          String?
+  updatedById   String?
+  updatedAt     DateTime @updatedAt
+}
+
