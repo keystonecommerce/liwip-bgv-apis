@@ -30,7 +30,7 @@ const partnerView = (row: BundleRow) => ({
   partner: row.tenant, createdAt: row.createdAt, updatedAt: row.updatedAt,
   offer: row.unitPricePaise === null ? null : { unitPricePaise: row.unitPricePaise, maxSeatsPerOrder: row.maxSeatsPerOrder, validUntil: row.priceValidUntil, note: row.replyNote, pricedAt: row.pricedAt },
   expired: row.status === "PRICED" && Boolean(row.priceValidUntil && row.priceValidUntil < new Date()),
-  closedBy: row.closedBy, closedAt: row.closedAt, acceptedAt: row.acceptedAt, packageId: row.packageId
+  replyNote: row.replyNote, closedBy: row.closedBy, closedAt: row.closedAt, acceptedAt: row.acceptedAt, packageId: row.packageId
 });
 
 /**
