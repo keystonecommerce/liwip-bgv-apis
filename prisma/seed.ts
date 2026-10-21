@@ -169,6 +169,9 @@ async function main(): Promise<void> {
         description: item.description,
         kind: item.kind,
         priceInr: item.priceInr,
+        // What quotes and the Buy screen read (docs/PRICING-AND-PAYMENTS.md); priceInr is legacy.
+        listPricePaise: item.priceInr * 100,
+        status: "PUBLISHED",
         advertisedCheckCount: item.advertisedCheckCount,
         targetWorkforce: item.targetWorkforce,
         displayOrder: item.displayOrder,
@@ -177,6 +180,9 @@ async function main(): Promise<void> {
       },
       create: {
         ...item,
+        listPricePaise: item.priceInr * 100,
+        status: "PUBLISHED",
+        publishedAt: new Date(),
         checks: [...item.checks],
         isActive: true
       }
