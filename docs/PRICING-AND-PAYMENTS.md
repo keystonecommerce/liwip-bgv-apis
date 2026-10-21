@@ -17,7 +17,9 @@ Keystone sells two things at two different prices. Every rupee is recorded as on
 | Paid | Upfront through Cashfree | Add-ons: in the same Cashfree order. API: monthly statement, then invoice |
 
 **Which price applies to a check**
+- **Aadhaar is in every bundle**, whatever the package lists (`BUNDLED_CHECKS` in `catalog.service.ts`). It is never sold as an add-on and never billed as usage on a bundle.
 - A check that is part of a case's paid package, or a paid add-on, is covered. It is never billed again.
+- **Extra checks are bought before they run.** On a case under way, the person buys them (an `EXTRAS` order line on the case's own package, add-ons only, at list check prices), then adds them. A company pays only for the bundle it bought: a case on a seat is never billed as usage.
 - Any other check a partner runs is billed at that partner's check price.
 - Liwip Direct is never billed per check: its checks are always prepaid.
 
@@ -80,7 +82,7 @@ For each line, in this order:
 
 1. **Unit price:** the active `PartnerPrice` for this partner and package, else the version's `listPricePaise`.
 2. **Bulk discount:** the best active `DiscountRule` whose quantity range contains the line quantity. A `PARTNER` rule beats a `GLOBAL` rule for the same range. Only one rule applies per line; rules don't stack. It discounts the package part only.
-3. **Add-on checks:** individuals only. Each one costs its `CheckRate`, and bulk tiers don't apply. Company seats carry no add-ons: an extra check on an invited case is billed as API usage.
+3. **Add-on checks:** individuals only. Each one costs its `CheckRate`, and bulk tiers don't apply. Company seats carry no add-ons: a person on an invited case buys their own extras (§5, step 3).
 4. **Line total:** `unit × quantity − discount + add-ons × quantity`, rounded to the paisa.
 5. **GST:** 18% on the taxable value. CGST and SGST when the buyer's state matches Keystone's GSTIN state, IGST otherwise. Individuals without a GSTIN are taxed at Keystone's state. The SAC code and rate are to be confirmed with the CA.
 
@@ -138,8 +140,8 @@ Base URL `https://sandbox.cashfree.com/pg` or `https://api.cashfree.com/pg`. Hea
 3. **Start:** the person opens the link and signs in by OTP. The OTP phone must equal the invite phone, otherwise the link doesn't open the case ("This link is for the number ending 0123").
    - The worker app previews the link (`GET /v1/worker/invites/:token`: partner, package, last four digits of the phone) and shows who asked before sign-in.
    - After the code, it redeems the link (`POST /v1/worker/invites/:token/redeem`) before it sets the session. The case is created under the partner's program with the invite's package version, or a draft the person already has there takes the package.
-   - The checks are the package's, in the app's order: Aadhaar first, face checks as one selfie step. The person approves them but can't change them (`checksFixed`); they can add checks later, billed as usage.
-   - The seat moves from reserved to used (`CONSUME`). The `PrepaidCase` covers the package's checks and what the journey adds (Aadhaar, both face steps), so none is billed again as usage.
+   - The checks are the package's, in the app's order: Aadhaar first, face checks as one selfie step. The person approves them but can't change them (`checksFixed`). They can buy extra checks later, paid by them, never by the company.
+   - The seat moves from reserved to used (`CONSUME`). The `PrepaidCase` covers the bundle (the package plus Aadhaar) and both face steps the journey runs. Usage billing skips seat cases entirely.
    - The person gets a worker token for the partner's program. Redeeming again returns the same case.
    - Not built yet: a name on Aadhaar that doesn't match the uploaded name goes to review, not failure.
 4. **Expiry:** invites not started in 30 days expire. Cancelling an invite releases its seat (`RELEASE`).
@@ -220,6 +222,9 @@ Not built yet: invoice PDF download.
 - `POST /v1/worker/billing/quotes` with `{ packageCode, addOns?: [checkType] }`
 - `POST /v1/worker/billing/orders` with the `Idempotency-Key` header and `{ quoteId }`
 - `GET /v1/worker/billing/orders/:orderId`
+- `GET /v1/worker/billing/extras`: checks the person can buy for their case under way, each at the sum of its list check prices, and whether it is already paid
+- `POST /v1/worker/billing/extras/quotes` with `{ checks: [SelectableCheck] }`: after consent; pay it with `POST orders`, then add the checks (`POST /v1/worker/case/checks/add`, refused with 409 until paid). The case view lists `paidExtras` bought but not added yet.
+- `POST /v1/worker/billing/quotes` is refused on a company's case: the bundle is already paid.
 
 **Public:**
 - `POST /v1/payments/cashfree/webhook`: checked against the raw body. Duplicates are dropped by `x-idempotency-key`, and rejected notices are kept.
