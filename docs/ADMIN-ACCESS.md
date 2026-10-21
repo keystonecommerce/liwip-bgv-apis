@@ -234,8 +234,8 @@ must send it; partner staff are resolved from their binding.
 | POST | `/confirm/passkey/options` · `/confirm/passkey/verify` | signed in | the same with a passkey; it must be this account's |
 
 Routes marked **recent sign-in** in AUTH.md answer `403 { code: "RECENT_SIGN_IN_REQUIRED" }` when
-the last sign-in or confirmation is older than `ADMIN_RECENT_SIGN_IN_MINUTES` (15). `/session`
-returns `recentSignInUntil`.
+the last sign-in, confirmation or powerful action is older than `ADMIN_RECENT_SIGN_IN_MINUTES`
+(60, sliding). `/session` returns `recentSignInUntil`.
 
 ### Keystone: partners, programs, vendors, staff, verifiers, usage
 

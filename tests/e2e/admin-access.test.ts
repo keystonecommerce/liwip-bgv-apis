@@ -460,7 +460,7 @@ test("the old ways in are gone: no shared admin key, no password login, no separ
 });
 
 test("powerful actions need a recent sign-in; confirming with an email code opens them again", async () => {
-  const stale = new Date(Date.now() - 20 * 60_000);
+  const stale = new Date(Date.now() - 61 * 60_000);
   await db.staffSession.update({ where: { tokenHash: createHash("sha256").update(keystone.token).digest("hex") }, data: { verifiedAt: stale } });
   assert.equal((await as(keystone, "get", "/v1/admin/staff")).status, 200, "reading never asks");
   const session = await as(keystone, "get", "/v1/admin/auth/session");
@@ -474,8 +474,15 @@ test("powerful actions need a recent sign-in; confirming with an email code open
   const code = emails.filter((item) => item.kind === "otp" && item.to === `keystone-${tag}@example.com`).at(-1)!.variables.code;
   const confirmed = await as(keystone, "post", "/v1/admin/auth/confirm/otp/verify").send({ code });
   assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body));
-  assert.ok(new Date(confirmed.body.recentSignInUntil) > new Date(Date.now() + 14 * 60_000));
+  assert.ok(new Date(confirmed.body.recentSignInUntil) > new Date(Date.now() + 59 * 60_000));
   assert.equal((await as(keystone, "post", "/v1/admin/staff").send(body)).status, 201);
+
+  // Sliding: a powerful action 50 minutes on still works and restarts the hour.
+  const tokenHash = createHash("sha256").update(keystone.token).digest("hex");
+  await db.staffSession.update({ where: { tokenHash }, data: { verifiedAt: new Date(Date.now() - 50 * 60_000) } });
+  assert.equal((await as(keystone, "post", "/v1/admin/staff").send({ ...body, email: `stepup2-${tag}@example.com` })).status, 201);
+  const after = await db.staffSession.findUniqueOrThrow({ where: { tokenHash } });
+  assert.ok(Date.now() - after.verifiedAt.getTime() < 60_000, "the powerful action restarted the hour");
 });
 
 test("API keys from the apps: partner admins manage only their own programs, never worker:cases", async () => {

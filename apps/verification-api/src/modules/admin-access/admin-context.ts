@@ -71,9 +71,10 @@ export const RequirePermission = (permission: PermissionKey, options: Omit<Permi
   SetMetadata(ADMIN_PERMISSION, { permission, ...options } satisfies PermissionRule);
 
 /**
- * A powerful action: the session must have signed in or confirmed it is them (email code or
- * passkey) within ADMIN_RECENT_SIGN_IN_MINUTES. Otherwise 403 with code RECENT_SIGN_IN_REQUIRED,
- * and the panel asks them to confirm, then retries. Sessions themselves still last 12 hours.
+ * A powerful action: the session must have signed in, confirmed it is them (email code or
+ * passkey) or done another powerful action within ADMIN_RECENT_SIGN_IN_MINUTES (60, sliding).
+ * Otherwise 403 with code RECENT_SIGN_IN_REQUIRED, and the panel asks them to confirm, then
+ * retries. Sessions themselves still last 12 hours.
  */
 export const RecentSignIn = () => SetMetadata(ADMIN_RECENT, true);
 

@@ -33,12 +33,12 @@ export function cookieSettings(): CookieSettings {
 }
 
 /**
- * How long a sign-in or a fresh confirmation counts as recent for powerful actions
- * (@RecentSignIn routes). ADMIN_RECENT_SIGN_IN_MINUTES, default 15.
+ * How long a sign-in, a confirmation or the last powerful action counts as recent for
+ * @RecentSignIn routes. Sliding: each powerful action restarts it. ADMIN_RECENT_SIGN_IN_MINUTES, default 60.
  */
 export function recentSignInMs(): number {
-  const minutes = Number(process.env.ADMIN_RECENT_SIGN_IN_MINUTES || 15);
-  return (Number.isFinite(minutes) && minutes > 0 ? minutes : 15) * 60_000;
+  const minutes = Number(process.env.ADMIN_RECENT_SIGN_IN_MINUTES || 60);
+  return (Number.isFinite(minutes) && minutes > 0 ? minutes : 60) * 60_000;
 }
 
 /**

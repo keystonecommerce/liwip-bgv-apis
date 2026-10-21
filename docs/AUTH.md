@@ -32,13 +32,16 @@ Both admin apps use the same staff sign-in. Each app has its own address, so its
 
 ## Recent sign-in for powerful actions
 
-Sessions last 12 hours and nobody is logged out early. Instead, a short list of powerful actions needs the person to have signed in, or confirmed it is them, within the last 15 minutes (`ADMIN_RECENT_SIGN_IN_MINUTES`). Reading never asks.
+Sessions last 12 hours and nobody is logged out early. Instead, a short list of powerful actions needs recent proof that it is really them. Reading never asks.
 
-1. The action's route is marked `@RecentSignIn()`. When the session's last confirmation is older than 15 minutes, the API answers 403 with `code: "RECENT_SIGN_IN_REQUIRED"`.
+- **Recent means within the last hour** (`ADMIN_RECENT_SIGN_IN_MINUTES`, default 60) of their sign-in, a "confirm it's you", or their last powerful action.
+- **The hour slides:** each powerful action restarts it. Someone working through refunds or setting up a partner is asked once at the start and not again while they keep going. A session left alone for an hour is asked again.
+
+1. The action's route is marked `@RecentSignIn()`. When the last proof is older than the hour, the API answers 403 with `code: "RECENT_SIGN_IN_REQUIRED"`.
 2. The app asks "Confirm it's you" with a passkey tap, or a code emailed to the person's own address:
    - `POST /v1/admin/auth/confirm/otp/send`, then `POST /v1/admin/auth/confirm/otp/verify` with `{ code }`;
    - or `POST /v1/admin/auth/confirm/passkey/options`, then `POST /v1/admin/auth/confirm/passkey/verify`.
-3. The confirmation must come back as the same account. The app then retries the action. For the next 15 minutes no other action asks again. `GET /v1/admin/auth/session` returns `recentSignInUntil`.
+3. The confirmation must come back as the same account. The app then retries the action. `GET /v1/admin/auth/session` returns `recentSignInUntil`.
 
 **Marked routes:**
 - **People and access:** inviting Keystone staff, granting or removing their roles, disabling or enabling them, revoking their sessions; inviting, re-roling or removing partner team members and vendor agents; granting, changing or revoking verifier access.

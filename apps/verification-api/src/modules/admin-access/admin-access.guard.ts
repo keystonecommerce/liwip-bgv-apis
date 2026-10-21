@@ -61,8 +61,12 @@ export class AdminAccessGuard implements CanActivate {
         admin.permissions = resolvePermissions(bindings, this.target(admin.scope));
         if (!admin.permissions.has(rule.permission)) throw new ForbiddenException("You do not have access to this");
       }
-      if (this.reflector.getAllAndOverride<boolean | undefined>(ADMIN_RECENT, targets) && Date.now() - session.verifiedAt.getTime() > recentSignInMs()) {
-        throw new ForbiddenException({ statusCode: 403, error: "Forbidden", code: "RECENT_SIGN_IN_REQUIRED", message: "Confirm it's you to continue" });
+      if (this.reflector.getAllAndOverride<boolean | undefined>(ADMIN_RECENT, targets)) {
+        if (Date.now() - session.verifiedAt.getTime() > recentSignInMs()) {
+          throw new ForbiddenException({ statusCode: 403, error: "Forbidden", code: "RECENT_SIGN_IN_REQUIRED", message: "Confirm it's you to continue" });
+        }
+        // Sliding: someone working through powerful actions is asked once, not again while they keep going.
+        admin.verifiedAt = await this.sessions.markVerified(session.id);
       }
     } catch (error) {
       if (error instanceof HttpException) {
