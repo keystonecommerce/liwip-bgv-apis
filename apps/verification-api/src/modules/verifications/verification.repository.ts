@@ -110,6 +110,13 @@ const asInputJson = (value: unknown): Prisma.InputJsonValue => value as Prisma.I
 const asNullableJson = (value: unknown): Prisma.InputJsonValue | Prisma.NullTypes.DbNull =>
   value === undefined || value === null ? Prisma.DbNull : asInputJson(value);
 
+/**
+ * A case a person opened in the Liwip app (workerPhone set) is theirs: an API key reaches it only
+ * if that key opened it (the worker app's own program). A partner's keys never read or decide an
+ * invite case through the API; the partner sees it in the admin app, filtered for them.
+ */
+const ownCasesOnly = (owner: ApplicationOwner) => (owner.apiKeyId ? { OR: [{ workerPhone: null }, { apiKeyId: owner.apiKeyId }] } : {});
+
 @Injectable()
 export class VerificationStore {
   private readonly sensitiveInputs = new Map<string, SensitiveVerificationInputs>();
@@ -185,7 +192,7 @@ export class VerificationStore {
 
   async getApplication(id: string, owner?: ApplicationOwner): Promise<ApplicationRecord | undefined> {
     const application = await (owner ? withTenantScope(this.prisma, owner) : this.prisma).application.findFirst({
-      where: { id, ...(owner ? { tenantId: owner.tenantId, clientId: owner.clientId } : {}) },
+      where: { id, ...(owner ? { tenantId: owner.tenantId, clientId: owner.clientId, ...ownCasesOnly(owner) } : {}) },
       include: { package: true, verificationCard: true, verifications: { select: { id: true }, orderBy: { createdAt: "asc" } } }
     });
     return application ? this.mapApplication(application) : undefined;
@@ -193,7 +200,7 @@ export class VerificationStore {
 
   async getVerification(id: string, owner?: ApplicationOwner): Promise<VerificationRecord | undefined> {
     const verification = await (owner ? withTenantScope(this.prisma, owner) : this.prisma).verification.findFirst({
-      where: { id, ...(owner ? { application: { tenantId: owner.tenantId, clientId: owner.clientId } } : {}) }
+      where: { id, ...(owner ? { application: { tenantId: owner.tenantId, clientId: owner.clientId, ...ownCasesOnly(owner) } } : {}) }
     });
     return verification ? this.mapVerification(verification) : undefined;
   }

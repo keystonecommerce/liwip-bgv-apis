@@ -50,6 +50,7 @@ export class CasesController {
   @Post(":caseId/checks/:checkId/decision")
   @HttpCode(200)
   @RequirePermission("cases.decide", { allPartners: true })
+  @RecentSignIn()
   @AuditAction("cases.checks.decide", { resourceType: "Application", resourceParam: "caseId" })
   decide(@CurrentAdmin() admin: AdminContext, @Param("caseId") caseId: string, @Param("checkId") checkId: string, @Body() body: { decision?: string; note?: string }) {
     return this.cases.decide(admin, id(caseId, "caseId"), id(checkId, "checkId"), body ?? {});

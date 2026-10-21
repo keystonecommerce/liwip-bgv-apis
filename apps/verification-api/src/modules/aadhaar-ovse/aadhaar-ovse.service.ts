@@ -44,6 +44,7 @@ export class AadhaarOvseService {
         id: `aadhaar_ovse_${randomUUID()}`,
         tenantId: client.tenantId,
         clientId: client.clientId,
+        apiKeyId: client.apiKeyId,
         providerClientId: body.data.client_id,
         referenceId,
         channel: body.data.channel || payload.channel,
@@ -118,7 +119,8 @@ export class AadhaarOvseService {
   private async findOwnedSession(providerClientId: string, client: ClientContext) {
     if (!providerClientId?.trim()) throw new BadRequestException("client_id is required");
     const session = await this.prisma.aadhaarOvseSession.findFirst({
-      where: { providerClientId: providerClientId.trim(), tenantId: client.tenantId, clientId: client.clientId }
+      // Only the key that started the session reads it (older sessions carry no key).
+      where: { providerClientId: providerClientId.trim(), tenantId: client.tenantId, clientId: client.clientId, OR: [{ apiKeyId: null }, { apiKeyId: client.apiKeyId }] }
     });
     if (!session) throw new NotFoundException("Aadhaar OVSE session was not found for this client");
     return session;

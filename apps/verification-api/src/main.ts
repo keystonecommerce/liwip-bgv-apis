@@ -24,17 +24,19 @@ async function bootstrap() {
   // Strip unknown properties from validated DTOs and coerce types.
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 
-  // CORS_ORIGINS plus the admin panel's origins (ADMIN_PANEL_ORIGINS). The admin panel sends
-  // its session cookie, so only these exact origins may make credentialed requests.
-  const allowedOrigins = [...new Set([process.env.CORS_ORIGINS, process.env.ADMIN_PANEL_ORIGINS]
-    .flatMap((value) => String(value || "").split(","))
-    .map((value) => value.trim().replace(/\/+$/, ""))
-    .filter(Boolean))];
+  // CORS_ORIGINS plus the admin apps' origins (ADMIN_PANEL_ORIGINS). Only the admin apps send the
+  // staff session cookie, so only they get credentialed CORS; other origins get plain CORS.
+  const originsOf = (value: string | undefined) => String(value || "").split(",").map((item) => item.trim().replace(/\/+$/, "")).filter(Boolean);
+  const adminOrigins = new Set(originsOf(process.env.ADMIN_PANEL_ORIGINS));
+  const allowedOrigins = new Set([...originsOf(process.env.CORS_ORIGINS), ...adminOrigins]);
 
   // Fail CLOSED: an unset CORS_ORIGINS must NOT open the API to every origin in
   // production. Explicit origins are always honoured; dev stays permissive.
-  if (allowedOrigins.length) {
-    app.enableCors({ origin: allowedOrigins, credentials: true });
+  if (allowedOrigins.size) {
+    app.enableCors((req: Request, callback: (error: Error | null, options: { origin: boolean; credentials: boolean }) => void) => {
+      const origin = String(req.header("origin") ?? "");
+      callback(null, { origin: allowedOrigins.has(origin), credentials: adminOrigins.has(origin) });
+    });
   } else if (isProduction) {
     app.enableCors({ origin: false });
   } else {

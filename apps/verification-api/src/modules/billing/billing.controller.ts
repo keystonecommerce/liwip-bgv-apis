@@ -109,6 +109,7 @@ export class BillingAdminController {
   @Post("statements/issue")
   @HttpCode(200)
   @RequirePermission("statements.manage")
+  @RecentSignIn()
   @AuditAction("statements.issue", { resourceType: "UsageStatement" })
   async issueStatements(@CurrentAdmin() admin: AdminContext, @Body() body: { period?: string; partnerId?: string }) {
     await this.usage.rate();

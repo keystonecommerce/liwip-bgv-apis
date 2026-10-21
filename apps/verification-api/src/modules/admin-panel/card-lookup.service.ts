@@ -7,7 +7,7 @@ import { AdminContext } from "../admin-access/admin-context";
 import { hasPermission } from "../admin-access/admin-permissions";
 import { StaffSessionService } from "../admin-access/staff-session.service";
 import { resolveCardToken } from "../cards/card-token";
-import { photoDataUrl, publicCardView, verifierCardView } from "../cards/card-views";
+import { matchedPhoto, photoDataUrl, publicCardView, verifierCardView } from "../cards/card-views";
 import { EMAIL_SENDER, EmailSender, inviteEmail } from "../staff-auth/email-sender";
 import { normaliseEmail } from "../staff-auth/staff-otp.service";
 import { CasesService } from "./cases.service";
@@ -82,7 +82,7 @@ export class CardLookupService {
       }
     }
 
-    const photo = photoDataUrl(await this.prisma.workerPhoto.findFirst({ where: { applicationId: card.applicationId } }) ?? await this.prisma.aadhaarPhoto.findFirst({ where: { applicationId: card.applicationId } }));
+    const photo = photoDataUrl(await matchedPhoto(this.prisma, card.applicationId));
     const view = { card, checks: card.application.verifications, data: card.application.data, photo };
 
     // 2. Verifiers, within the access Keystone granted.

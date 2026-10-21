@@ -137,7 +137,7 @@ The tables below are generated from `apps/verification-api/src/modules/admin-acc
   - A partner admin manages their own programs' keys in Business (`apikeys.manage`).
   - The routes are `GET/POST /v1/admin/api-keys`, `GET /v1/admin/api-keys/scopes`, and `POST /v1/admin/api-keys/:keyId/rotate` and `/revoke`.
   - Every change needs a recent sign-in.
-- **`worker:cases` is Keystone-only.** It is the Liwip worker app's access to people's own cases. Partners cannot grant it, and they cannot manage keys for Liwip Direct.
+- **`worker:cases` and `verifications:review` are Keystone-only.** The first is the Liwip worker app's access to people's own cases; the second decides checks in review, which can release a Liwip card. Partners cannot grant either, and they cannot manage keys for Liwip Direct. Keys made before this rule keep their scopes until rotated.
 - **Server-side scripts** (`npm run client:provision`, `key:rotate`, `key:revoke`, `key:list`) use the same provisioning code and audit trail, for setting up environments.
 - **Scopes:**
   - `packages:read`
@@ -147,7 +147,7 @@ The tables below are generated from `apps/verification-api/src/modules/admin-acc
   - `otp:write`
   - `documents:read` and `documents:write`
   - `usage:read` and `audit:read`
-  - `worker:cases` (Keystone only)
+  - `worker:cases` and `verifications:review` (Keystone only)
 
 ## Field tasks
 
@@ -162,6 +162,9 @@ The tables below are generated from `apps/verification-api/src/modules/admin-acc
 - The person proves their phone number by SMS code (MSG91) or a passkey.
 - The token ties them to one partner and program, and lasts 12 hours.
 - Invite links (`/v/:token`) carry a single-use token that is stored hashed, and work only for the invited number. Redeeming one gives the person a worker token for the partner's program: the worker app's key (`worker:cases`) then acts for that program on their case only.
+- A case a person opened in the Liwip app is theirs. An API key reaches it only if that key opened it (the worker app's own program); a partner's keys never read, retry or decide an invite case through the API. The partner sees it in Business, filtered for them.
+- Aadhaar sessions are bound to the API key that started them.
+- Checks run only once paid for (the person's bundle, or a company's seat). `WORKER_UNPAID_CHECKS=allow` lifts this in development only, until the worker pay flow is built.
 
 ## Support tools
 

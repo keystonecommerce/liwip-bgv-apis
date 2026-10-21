@@ -462,6 +462,13 @@ test("invite redemption: only the invited number, through the worker app, opens 
   const added = ok(await asInvitee("post", "/v1/worker/case/checks/add").send({ checks: ["PAN"] })).body;
   assert.ok(added.selectedChecks.includes("PAN"));
   assert.deepEqual(added.paidExtras, []);
+
+  // The partner's own API keys never reach a case the person opened in the Liwip app, and only Keystone grants check decisions.
+  assert.equal((await as(adminA, "post", "/v1/admin/api-keys").send({ programId: programA, name: "Decider", scopes: ["verifications:review"] })).status, 403);
+  const reader = ok(await as(adminA, "post", "/v1/admin/api-keys").send({ programId: programA, name: "Reader", scopes: ["applications:read"] }), 201).body;
+  const readerKey = reader.rawKey ?? reader.key ?? reader.apiKey?.rawKey;
+  assert.ok(readerKey, "the new key is returned once");
+  assert.equal((await api().get(`/v1/applications/${row.id}/verifications`).set("x-api-key", readerKey)).status, 404, "an invite case is not readable with a partner key");
 });
 
 test("custom bundle: a partner asks, Keystone prices it with a seat limit, only that partner can buy it", async () => {

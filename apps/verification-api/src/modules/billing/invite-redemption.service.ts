@@ -101,10 +101,13 @@ export class InviteRedemptionService {
       const claimed = await tx.invite.updateMany({ where: { id: invite.id, status: "SENT" }, data: { status: "STARTED", startedAt: new Date(), applicationId } });
       if (!claimed.count) throw new ConflictException("This link was just used. Try again.");
       await this.seats.consume(tx, invite);
+      // Keep anything already paid on this case (extras the person bought) alongside the seat's bundle.
+      const before = await tx.prepaidCase.findUnique({ where: { applicationId }, select: { coveredChecks: true } });
+      const allCovered = [...new Set([...((before?.coveredChecks as string[] | undefined) ?? []), ...covered])];
       await tx.prepaidCase.upsert({
         where: { applicationId },
-        create: { applicationId, tenantId: invite.tenantId, source: "SEAT", inviteId: invite.id, packageCode: invite.packageCode, packageVersion: invite.packageVersion, coveredChecks: covered },
-        update: { source: "SEAT", inviteId: invite.id, packageCode: invite.packageCode, packageVersion: invite.packageVersion, coveredChecks: covered }
+        create: { applicationId, tenantId: invite.tenantId, source: "SEAT", inviteId: invite.id, packageCode: invite.packageCode, packageVersion: invite.packageVersion, coveredChecks: allCovered },
+        update: { source: "SEAT", inviteId: invite.id, packageCode: invite.packageCode, packageVersion: invite.packageVersion, coveredChecks: allCovered }
       });
       return { invite, client, applicationId, started: true };
     });

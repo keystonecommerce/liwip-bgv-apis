@@ -118,6 +118,10 @@ const packages = [
 ] as const;
 
 async function main(): Promise<void> {
+  // The fallback keys below are public in this file: never seed them where real people's data lives.
+  if (process.env.NODE_ENV === "production" && (!process.env.DEV_PLATFORM_API_KEY || !process.env.DEV_SECOND_PLATFORM_API_KEY)) {
+    throw new Error("Set DEV_PLATFORM_API_KEY and DEV_SECOND_PLATFORM_API_KEY before seeding a production build");
+  }
   const developmentApiKey = process.env.DEV_PLATFORM_API_KEY || "dev-gig-platform-key-change-me";
   const secondDevelopmentApiKey = process.env.DEV_SECOND_PLATFORM_API_KEY || "dev-partner-platform-key-change-me";
   const tenant = await prisma.tenant.upsert({

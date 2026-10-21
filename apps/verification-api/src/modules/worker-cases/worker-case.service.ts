@@ -44,6 +44,12 @@ export function isSelectableAvailable(check: SelectableCheck): boolean {
   return SELECTABLE_CHECKS[check].types.every((type) => isCheckAvailable(type));
 }
 
+/**
+ * Development and tests only, until the worker pay flow is built: WORKER_UNPAID_CHECKS=allow lets
+ * chosen checks run without a bundle. Never in production, whatever the env says.
+ */
+const unpaidChecksAllowed = () => process.env.WORKER_UNPAID_CHECKS === "allow" && process.env.NODE_ENV !== "production";
+
 @Injectable()
 export class WorkerCaseService {
   constructor(
@@ -113,6 +119,12 @@ export class WorkerCaseService {
     const required = [...new Set(["case", ...selected.map((check) => SELECTABLE_CHECKS[check].consent)])];
     const missing = required.filter((item) => !items.has(item));
     if (missing.length) throw new BadRequestException(`Consent is needed for: ${missing.join(", ")}`);
+    // Checks run only once paid for: by the person's bundle or a company's seat.
+    if (!unpaidChecksAllowed()) {
+      const paid = new Set(await this.paidTypes(application.id));
+      const owed = selected.filter((check) => SELECTABLE_CHECKS[check].types.some((type) => !paid.has(type)));
+      if (owed.length) throw new ConflictException(`Buy a bundle with ${owed.join(", ")} first`);
+    }
 
     const grantedAt = new Date().toISOString();
     await this.store.updateApplicationData(application.id, owner, (data) => ({

@@ -6,15 +6,15 @@ import { AdminContext, scopedTenantId } from "../admin-access/admin-context";
 import { hasPermission } from "../admin-access/admin-permissions";
 import { id, optionalText } from "./input";
 
-/** Scopes only Keystone may grant: the Liwip worker app's own access to people's cases. */
-const KEYSTONE_ONLY_SCOPES = new Set(["worker:cases"]);
+/** Scopes only Keystone may grant: the Liwip worker app's own access to people's cases, and deciding checks in review (it can release a Liwip card). */
+const KEYSTONE_ONLY_SCOPES = new Set(["worker:cases", "verifications:review"]);
 
 const SCOPE_LABELS: Record<string, string> = {
   "packages:read": "Read packages and prices",
   "applications:write": "Create and update cases",
   "applications:read": "Read cases and results",
   "verifications:retry": "Retry checks",
-  "verifications:review": "Decide checks in review",
+  "verifications:review": "Decide checks in review (Keystone only)",
   "verifications:write": "Start checks",
   "digilocker:write": "Start DigiLocker sessions",
   "aadhaar:write": "Start Aadhaar verification",
@@ -123,7 +123,7 @@ export class ApiKeysService {
     const scopes = [...new Set(value.map((scope) => String(scope).trim()))];
     const unknown = scopes.filter((scope) => !(ALL_SCOPES as readonly string[]).includes(scope));
     if (unknown.length) throw new BadRequestException(`Unknown scopes: ${unknown.join(", ")}`);
-    if (!this.isKeystone(admin) && scopes.some((scope) => KEYSTONE_ONLY_SCOPES.has(scope))) throw new ForbiddenException("worker:cases is for the Liwip worker app only");
+    if (!this.isKeystone(admin) && scopes.some((scope) => KEYSTONE_ONLY_SCOPES.has(scope))) throw new ForbiddenException(`Only Keystone can grant ${scopes.filter((scope) => KEYSTONE_ONLY_SCOPES.has(scope)).join(", ")}`);
     return scopes;
   }
 }

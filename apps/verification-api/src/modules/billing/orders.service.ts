@@ -52,7 +52,8 @@ export class OrdersService implements OnModuleInit, OnModuleDestroy {
   async checkout(buyer: Buyer, quoteIdValue: unknown, idempotencyKey: string | undefined, customer: CheckoutCustomer, returnUrl: string) {
     if (!KEY.test(idempotencyKey ?? "")) throw new BadRequestException("Idempotency-Key must be 16 to 128 letters, digits, _ or -");
     const quoteId = String(quoteIdValue ?? "");
-    const existing = await this.prisma.order.findFirst({ where: { tenantId: buyer.tenantId, OR: [{ idempotencyKey }, { quoteId }] }, include: { lines: true } });
+    // An individual's order is found only on their own case: Liwip Direct buyers share one tenant.
+    const existing = await this.prisma.order.findFirst({ where: { tenantId: buyer.tenantId, ...(buyer.applicationId ? { applicationId: buyer.applicationId } : {}), OR: [{ idempotencyKey }, { quoteId }] }, include: { lines: true } });
     if (existing) {
       if (existing.quoteId !== quoteId || existing.idempotencyKey !== idempotencyKey) throw new ConflictException("This quote or Idempotency-Key was already used for another order");
       return this.ensureCashfreeOrder(existing, customer, returnUrl);
@@ -209,8 +210,10 @@ export class OrdersService implements OnModuleInit, OnModuleDestroy {
     try { payload = JSON.parse(rawBody.toString("utf8")); } catch { /* recorded below as unreadable */ }
     const orderId = payload.data?.order?.order_id;
     const key = header("x-idempotency-key") || `${header("x-webhook-timestamp")}:${header("x-webhook-signature")}`;
+    // A forged notice is kept for the record under its own key, so it can never mark the genuine one a duplicate.
+    const recordKey = valid ? key.slice(0, 200) : `invalid:${randomUUID()}`;
     try {
-      await this.prisma.paymentWebhookEvent.create({ data: { id: `pwh_${randomUUID()}`, provider: "CASHFREE", idempotencyKey: key.slice(0, 200), type: String(payload.type ?? "UNKNOWN").slice(0, 60), orderId: orderId && ORDER_CODE.test(orderId) ? orderId : null, signatureValid: valid } });
+      await this.prisma.paymentWebhookEvent.create({ data: { id: `pwh_${randomUUID()}`, provider: "CASHFREE", idempotencyKey: recordKey, type: String(payload.type ?? "UNKNOWN").slice(0, 60), orderId: orderId && ORDER_CODE.test(orderId) ? orderId : null, signatureValid: valid } });
     } catch (error) {
       if ((error as Prisma.PrismaClientKnownRequestError).code === "P2002") return { received: true, duplicate: true };
       throw error;

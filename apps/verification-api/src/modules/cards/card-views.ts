@@ -7,6 +7,7 @@
  * - VERIFIER: the public view plus the card number and each check's state and date.
  * - FULL: the partner's (or Keystone's) case detail, built by the cases service.
  */
+import type { PrismaService } from "../../common/database/prisma.service";
 
 const RUNNING = new Set(["PENDING", "QUEUED", "PROCESSING", "MANUAL_REVIEW"]);
 const EXPIRING_DAYS = 30;
@@ -72,6 +73,18 @@ export const workerName = (data: unknown) => {
   const value = (data ?? {}) as WorkerData;
   return value.identity?.fullName || value.personal?.declaredName || value.personal?.nameAsAadhaar || null;
 };
+
+/**
+ * The photo a card shows to anyone else (the public check, other partners' verifiers): the selfie,
+ * and only once the latest face match passed. Never the Aadhaar photo, and never an unmatched selfie.
+ */
+export async function matchedPhoto(prisma: PrismaService, applicationId: string) {
+  const [match, selfie] = await Promise.all([
+    prisma.verification.findFirst({ where: { applicationId, type: "FACE_MATCH" }, orderBy: { createdAt: "desc" }, select: { status: true } }),
+    prisma.workerPhoto.findFirst({ where: { applicationId } })
+  ]);
+  return match?.status === "VERIFIED" ? selfie : null;
+}
 
 export const photoDataUrl = (photo: { bytes: Uint8Array; contentType: string } | null) =>
   photo ? `data:${photo.contentType};base64,${Buffer.from(photo.bytes).toString("base64")}` : null;

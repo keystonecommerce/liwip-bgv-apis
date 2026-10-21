@@ -15,8 +15,8 @@ const stateOf = (address: unknown) => (address && typeof address === "object" &&
 
 /**
  * The billable checks that are neither charged nor covered by a prepaid package, after `since`.
- * A case on a company's seat is never billed as usage: the company pays only for the bundle it
- * bought, and checks the person adds are theirs to pay.
+ * A company's seat covers its bundle; checks the person adds are bought by them and covered too.
+ * Partner API keys cannot reach a case a person opened in the Liwip app, so nothing else runs there.
  * Billable: a successful provider call, or a check with no provider call that reached a result
  * (manual and field checks). Liwip Direct never pays per check.
  */
@@ -33,7 +33,7 @@ function candidates(prisma: Prisma.TransactionClient | PrismaService, since: Dat
       WHERE v."id" > ${after}
         ${tenantId ? Prisma.sql`AND v."tenantId" = ${tenantId}` : Prisma.empty}
         AND NOT EXISTS (SELECT 1 FROM "UsageCharge" uc WHERE uc."verificationId" = v."id")
-        AND NOT EXISTS (SELECT 1 FROM "PrepaidCase" p WHERE p."applicationId" = v."applicationId" AND (p."source" = 'SEAT' OR p."coveredChecks" @> jsonb_build_array(v."type")))
+        AND NOT EXISTS (SELECT 1 FROM "PrepaidCase" p WHERE p."applicationId" = v."applicationId" AND p."coveredChecks" @> jsonb_build_array(v."type"))
     ) c
     WHERE c."occurredAt" IS NOT NULL AND c."occurredAt" >= ${since} AND c."occurredAt" < ${until}
     ORDER BY c."id"
