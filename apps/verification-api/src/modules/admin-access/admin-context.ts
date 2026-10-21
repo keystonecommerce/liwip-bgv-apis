@@ -34,6 +34,8 @@ export interface AdminContext {
   sessionId: string;
   authMethod: string;
   authTime: Date;
+  /** Last sign-in or confirmation; @RecentSignIn routes need it to be recent. */
+  verifiedAt: Date;
   bindings: AdminBinding[];
   scope: AdminScope;
   /** Permissions held at `scope`. */
@@ -54,6 +56,7 @@ export type AdminRequest = {
 export const ADMIN_PERMISSION = "admin_permission";
 export const ADMIN_SIGNED_IN = "admin_signed_in";
 export const ADMIN_AUDIT = "admin_audit";
+export const ADMIN_RECENT = "admin_recent_sign_in";
 
 export interface PermissionRule {
   permission: PermissionKey;
@@ -66,6 +69,13 @@ export interface PermissionRule {
 /** The permission a route needs. Its scope (GLOBAL, PARTNER or VENDOR) comes from the permission. */
 export const RequirePermission = (permission: PermissionKey, options: Omit<PermissionRule, "permission"> = {}) =>
   SetMetadata(ADMIN_PERMISSION, { permission, ...options } satisfies PermissionRule);
+
+/**
+ * A powerful action: the session must have signed in or confirmed it is them (email code or
+ * passkey) within ADMIN_RECENT_SIGN_IN_MINUTES. Otherwise 403 with code RECENT_SIGN_IN_REQUIRED,
+ * and the panel asks them to confirm, then retries. Sessions themselves still last 12 hours.
+ */
+export const RecentSignIn = () => SetMetadata(ADMIN_RECENT, true);
 
 /** Any signed-in staff account (own session, passkeys, card lookups decided in the handler). */
 export const SignedIn = () => SetMetadata(ADMIN_SIGNED_IN, true);

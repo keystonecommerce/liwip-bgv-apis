@@ -9,7 +9,7 @@ import type { WorkerIdentity } from "../../common/auth/worker-token";
 import { PrismaService } from "../../common/database/prisma.service";
 import { AdminAccessGuard } from "../admin-access/admin-access.guard";
 import { panelUrl } from "../admin-access/admin-config";
-import { AdminContext, AuditAction, CurrentAdmin, RequirePermission, scopedTenantId } from "../admin-access/admin-context";
+import { AdminContext, AuditAction, CurrentAdmin, RequirePermission, scopedTenantId, RecentSignIn } from "../admin-access/admin-context";
 import { id, pageOf, paginated, text } from "../admin-panel/input";
 import { billingConfig, periodOf, periodRange } from "./billing-config";
 import { CatalogService, DiscountRuleInput, PackageInput, packageCode, PartnerPriceInput } from "./catalog.service";
@@ -69,6 +69,7 @@ export class BillingAdminController {
 
   @Post("check-rates")
   @RequirePermission("pricing.manage")
+  @RecentSignIn()
   @AuditAction("check-rates.create", { resourceType: "CheckRate" })
   createCheckRate(@CurrentAdmin() admin: AdminContext, @Body() body: CheckRateInput) {
     return this.checkRates.create(admin, body ?? {});
@@ -76,6 +77,7 @@ export class BillingAdminController {
 
   @Patch("check-rates/:rateId")
   @RequirePermission("pricing.manage")
+  @RecentSignIn()
   @AuditAction("check-rates.update", { resourceType: "CheckRate", resourceParam: "rateId" })
   updateCheckRate(@CurrentAdmin() admin: AdminContext, @Param("rateId") rateId: string, @Body() body: CheckRateInput) {
     return this.checkRates.update(admin, rateId, body ?? {});
@@ -112,6 +114,7 @@ export class BillingAdminController {
   @Post("statements/:statementId/paid")
   @HttpCode(200)
   @RequirePermission("statements.manage")
+  @RecentSignIn()
   @AuditAction("statements.paid", { resourceType: "UsageStatement", resourceParam: "statementId" })
   statementPaid(@Param("statementId") statementId: string, @Body() body: { reference?: string; paidOn?: string }) {
     return this.usage.markPaid({ statementId: id(statementId, "statementId"), reference: String(body?.reference ?? ""), paidAt: istDay(body?.paidOn, "paidOn") ?? null });
@@ -141,6 +144,7 @@ export class BillingAdminController {
   @Post("packages/:code/publish")
   @HttpCode(200)
   @RequirePermission("packages.manage")
+  @RecentSignIn()
   @AuditAction("packages.publish", { resourceType: "VerificationPackage" })
   publish(@CurrentAdmin() admin: AdminContext, @Param("code") code: string) {
     return this.catalog.publish(admin, code);
@@ -149,6 +153,7 @@ export class BillingAdminController {
   @Post("packages/:code/retire")
   @HttpCode(200)
   @RequirePermission("packages.manage")
+  @RecentSignIn()
   @AuditAction("packages.retire", { resourceType: "VerificationPackage" })
   retire(@CurrentAdmin() admin: AdminContext, @Param("code") code: string) {
     return this.catalog.retire(admin, code);
@@ -170,6 +175,7 @@ export class BillingAdminController {
 
   @Post("discount-rules")
   @RequirePermission("pricing.manage")
+  @RecentSignIn()
   @AuditAction("discounts.create", { resourceType: "DiscountRule" })
   createDiscountRule(@CurrentAdmin() admin: AdminContext, @Body() body: DiscountRuleInput) {
     return this.catalog.createDiscountRule(admin, body ?? {});
@@ -177,6 +183,7 @@ export class BillingAdminController {
 
   @Patch("discount-rules/:ruleId")
   @RequirePermission("pricing.manage")
+  @RecentSignIn()
   @AuditAction("discounts.update", { resourceType: "DiscountRule", resourceParam: "ruleId" })
   updateDiscountRule(@CurrentAdmin() admin: AdminContext, @Param("ruleId") ruleId: string, @Body() body: DiscountRuleInput) {
     return this.catalog.updateDiscountRule(admin, ruleId, body ?? {});
@@ -191,6 +198,7 @@ export class BillingAdminController {
 
   @Post("partners/:partnerId/prices")
   @RequirePermission("pricing.manage")
+  @RecentSignIn()
   @AuditAction("partner-prices.create", { resourceType: "PartnerPrice" })
   createPartnerPrice(@CurrentAdmin() admin: AdminContext, @Param("partnerId") partnerId: string, @Body() body: PartnerPriceInput) {
     return this.catalog.createPartnerPrice(admin, partnerId, body ?? {});
@@ -198,6 +206,7 @@ export class BillingAdminController {
 
   @Patch("partners/:partnerId/prices/:priceId")
   @RequirePermission("pricing.manage")
+  @RecentSignIn()
   @AuditAction("partner-prices.update", { resourceType: "PartnerPrice", resourceParam: "priceId" })
   updatePartnerPrice(@CurrentAdmin() admin: AdminContext, @Param("partnerId") partnerId: string, @Param("priceId") priceId: string, @Body() body: PartnerPriceInput) {
     return this.catalog.updatePartnerPrice(admin, partnerId, priceId, body ?? {});
@@ -206,6 +215,7 @@ export class BillingAdminController {
   @Post("partners/:partnerId/seats/adjust")
   @HttpCode(200)
   @RequirePermission("seats.adjust")
+  @RecentSignIn()
   @AuditAction("seats.adjust", { resourceType: "Tenant", resourceParam: "partnerId" })
   async adjustSeats(@CurrentAdmin() admin: AdminContext, @Param("partnerId") partnerId: string, @Body() body: { packageCode?: string; delta?: number; reason?: string }) {
     const tenantId = id(partnerId, "partnerId");
@@ -216,6 +226,7 @@ export class BillingAdminController {
   @Post("orders/:orderId/refunds")
   @HttpCode(200)
   @RequirePermission("orders.refund")
+  @RecentSignIn()
   @AuditAction("orders.refund", { resourceType: "Order", resourceParam: "orderId" })
   refund(@CurrentAdmin() admin: AdminContext, @Param("orderId") orderId: string, @Body() body: { amountPaise?: number; reason?: string; seats?: Record<string, number>; allowUsedSeats?: boolean }) {
     return this.orders.refund({ orderId: id(orderId, "orderId"), amountPaise: body?.amountPaise as number, reason: text(body?.reason, "reason", 300, 5), seats: body?.seats, allowUsedSeats: body?.allowUsedSeats === true, createdById: admin.user.id });

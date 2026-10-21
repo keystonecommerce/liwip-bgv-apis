@@ -2,8 +2,8 @@ import { BadRequestException, CanActivate, ExecutionContext, ForbiddenException,
 import { Reflector } from "@nestjs/core";
 import { AuditService } from "../../common/audit/audit.service";
 import { PrismaService } from "../../common/database/prisma.service";
-import { firstHeader } from "./admin-config";
-import { ADMIN_PERMISSION, ADMIN_SIGNED_IN, AdminBinding, AdminContext, AdminRequest, AdminScope, PermissionRule } from "./admin-context";
+import { firstHeader, recentSignInMs } from "./admin-config";
+import { ADMIN_PERMISSION, ADMIN_RECENT, ADMIN_SIGNED_IN, AdminBinding, AdminContext, AdminRequest, AdminScope, PermissionRule } from "./admin-context";
 import { AccessTarget, boundPartnerIds, boundVendorIds, hasPermission, permissionDefinition, resolvePermissions } from "./admin-permissions";
 import { StaffSessionService } from "./staff-session.service";
 
@@ -46,6 +46,7 @@ export class AdminAccessGuard implements CanActivate {
       sessionId: session.id,
       authMethod: session.authMethod,
       authTime: session.createdAt,
+      verifiedAt: session.verifiedAt,
       bindings,
       scope: { kind: "NONE" },
       permissions: new Set(),
@@ -59,6 +60,9 @@ export class AdminAccessGuard implements CanActivate {
         admin.scope = await this.resolveScope(request, bindings, rule);
         admin.permissions = resolvePermissions(bindings, this.target(admin.scope));
         if (!admin.permissions.has(rule.permission)) throw new ForbiddenException("You do not have access to this");
+      }
+      if (this.reflector.getAllAndOverride<boolean | undefined>(ADMIN_RECENT, targets) && Date.now() - session.verifiedAt.getTime() > recentSignInMs()) {
+        throw new ForbiddenException({ statusCode: 403, error: "Forbidden", code: "RECENT_SIGN_IN_REQUIRED", message: "Confirm it's you to continue" });
       }
     } catch (error) {
       if (error instanceof HttpException) {

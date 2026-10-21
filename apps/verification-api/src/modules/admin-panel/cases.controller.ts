@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, HttpCode, Inject, Param, Patch, Post, Qu
 import type { Request } from "express";
 import { RateLimitService } from "../../common/security/rate-limit.service";
 import { AdminAccessGuard } from "../admin-access/admin-access.guard";
-import { AdminContext, AuditAction, CurrentAdmin, RequirePermission, SignedIn } from "../admin-access/admin-context";
+import { AdminContext, AuditAction, CurrentAdmin, RequirePermission, SignedIn, RecentSignIn } from "../admin-access/admin-context";
 import { CardLookupService } from "./card-lookup.service";
 import { CaseListQuery, CasesService } from "./cases.service";
 import { id, pageOf } from "./input";
@@ -87,6 +87,7 @@ export class VerifiersController {
 
   @Post()
   @RequirePermission("verifiers.manage")
+  @RecentSignIn()
   @AuditAction("verifiers.create")
   create(@CurrentAdmin() admin: AdminContext, @Body() body: Record<string, unknown>) {
     return this.cards.createVerifier(admin, body ?? {});
@@ -94,6 +95,7 @@ export class VerifiersController {
 
   @Patch(":userId")
   @RequirePermission("verifiers.manage")
+  @RecentSignIn()
   @AuditAction("verifiers.update")
   update(@CurrentAdmin() admin: AdminContext, @Param("userId") userId: string, @Body() body: { level?: string; expiresAt?: string | null }) {
     return this.cards.updateVerifier(admin, id(userId, "userId"), body ?? {});
@@ -101,6 +103,7 @@ export class VerifiersController {
 
   @Post(":userId/cards")
   @RequirePermission("verifiers.manage")
+  @RecentSignIn()
   @AuditAction("verifiers.cards.grant")
   grantCards(@CurrentAdmin() admin: AdminContext, @Param("userId") userId: string, @Body() body: { cardNumbers?: string[] }) {
     return this.cards.grantCards(admin, id(userId, "userId"), body ?? {});
@@ -108,6 +111,7 @@ export class VerifiersController {
 
   @Delete(":userId/cards/:cardId")
   @RequirePermission("verifiers.manage")
+  @RecentSignIn()
   @AuditAction("verifiers.cards.remove")
   removeCard(@CurrentAdmin() admin: AdminContext, @Param("userId") userId: string, @Param("cardId") cardId: string) {
     return this.cards.removeCard(admin, id(userId, "userId"), id(cardId, "cardId"));
@@ -116,6 +120,7 @@ export class VerifiersController {
   @Post(":userId/revoke")
   @HttpCode(200)
   @RequirePermission("verifiers.manage")
+  @RecentSignIn()
   @AuditAction("verifiers.revoke")
   revoke(@CurrentAdmin() admin: AdminContext, @Param("userId") userId: string) {
     return this.cards.revokeVerifier(admin, id(userId, "userId"));

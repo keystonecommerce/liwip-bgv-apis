@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpCode, Inject, Param, Post, Req, Res, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, ForbiddenException, Get, HttpCode, Inject, Param, Post, Req, Res, UseGuards } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@simplewebauthn/server";
 import type { Request, Response } from "express";
@@ -6,7 +6,7 @@ import { AuditService } from "../../common/audit/audit.service";
 import { PrismaService } from "../../common/database/prisma.service";
 import { RateLimitService } from "../../common/security/rate-limit.service";
 import { AdminAccessGuard } from "../admin-access/admin-access.guard";
-import { firstHeader } from "../admin-access/admin-config";
+import { firstHeader, recentSignInMs } from "../admin-access/admin-config";
 import { AdminContext, AuditAction, CurrentAdmin, SignedIn, SkipAudit } from "../admin-access/admin-context";
 import { describeAccess, resolvePermissions, systemRole } from "../admin-access/admin-permissions";
 import { StaffSessionService } from "../admin-access/staff-session.service";
@@ -105,6 +105,8 @@ export class StaffSessionController {
   constructor(
     @Inject(StaffSessionService) private readonly sessions: StaffSessionService,
     @Inject(StaffPasskeyService) private readonly passkeys: StaffPasskeyService,
+    @Inject(StaffOtpService) private readonly otp: StaffOtpService,
+    @Inject(RateLimitService) private readonly limits: RateLimitService,
     @Inject(PrismaService) private readonly prisma: PrismaService
   ) {}
 
@@ -125,6 +127,8 @@ export class StaffSessionController {
       user: admin.user,
       authMethod: admin.authMethod,
       signedInAt: admin.authTime.toISOString(),
+      // Powerful actions (@RecentSignIn) need a confirmation after this; the panel asks then.
+      recentSignInUntil: new Date(admin.verifiedAt.getTime() + recentSignInMs()).toISOString(),
       csrfToken: this.sessions.csrfToken(admin.sessionId),
       access: {
         ...describeAccess(bindings),
@@ -152,6 +156,53 @@ export class StaffSessionController {
     await this.sessions.revokeAll(admin.user.id);
     this.sessions.clearCookie(response);
     return { signedOut: true };
+  }
+
+  /** Confirm it's you before a powerful action: an emailed code to this account's own address. */
+  @Post("confirm/otp/send")
+  @HttpCode(200)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @AuditAction("auth.confirm.otp.send")
+  async confirmSend(@CurrentAdmin() admin: AdminContext, @Req() request: Request) {
+    await this.limits.consume("staffOtpSendPerIp", request.ip || "unknown");
+    const result = await this.otp.send(admin.user.email, request.ip);
+    return { sent: true, to: admin.user.email, expiresInSeconds: result.expiresInSeconds };
+  }
+
+  @Post("confirm/otp/verify")
+  @HttpCode(200)
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @AuditAction("auth.confirm.otp")
+  async confirmVerify(@CurrentAdmin() admin: AdminContext, @Req() request: Request, @Body() body: { code?: string }) {
+    await this.limits.consume("staffSignInPerIp", request.ip || "unknown");
+    const user = await this.otp.verify(admin.user.email, body?.code);
+    if (user.id !== admin.user.id) throw new ForbiddenException("That code is for another account");
+    return this.confirmed(admin);
+  }
+
+  /** Or with a passkey: the same sign-in ceremony, which must come back as this account. */
+  @Post("confirm/passkey/options")
+  @HttpCode(200)
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @SkipAudit()
+  confirmPasskeyOptions(@Req() request: Request) {
+    return this.passkeys.loginOptions(origin(request));
+  }
+
+  @Post("confirm/passkey/verify")
+  @HttpCode(200)
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @AuditAction("auth.confirm.passkey")
+  async confirmPasskey(@CurrentAdmin() admin: AdminContext, @Req() request: Request, @Body() body: { challengeId?: string; response?: AuthenticationResponseJSON }) {
+    await this.limits.consume("staffSignInPerIp", request.ip || "unknown");
+    const user = await this.passkeys.loginVerify(origin(request), body?.challengeId, body?.response as AuthenticationResponseJSON);
+    if (user.id !== admin.user.id) throw new ForbiddenException("That passkey belongs to another account");
+    return this.confirmed(admin);
+  }
+
+  private async confirmed(admin: AdminContext) {
+    const verifiedAt = await this.sessions.markVerified(admin.sessionId);
+    return { confirmed: true, recentSignInUntil: new Date(verifiedAt.getTime() + recentSignInMs()).toISOString() };
   }
 
   @Get("passkeys")

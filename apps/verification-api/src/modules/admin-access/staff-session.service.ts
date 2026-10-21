@@ -15,6 +15,7 @@ export interface AuthenticatedSession {
   id: string;
   authMethod: string;
   createdAt: Date;
+  verifiedAt: Date;
   user: { id: string; email: string; displayName: string };
 }
 
@@ -69,7 +70,14 @@ export class StaffSessionService {
       void this.prisma.staffSession.update({ where: { id: session.id }, data: { lastSeenAt: new Date(now) } }).catch(() => undefined);
     }
     const { status: _status, sessionVersion: _version, ...user } = session.user;
-    return { id: session.id, authMethod: session.authMethod, createdAt: session.createdAt, user };
+    return { id: session.id, authMethod: session.authMethod, createdAt: session.createdAt, verifiedAt: session.verifiedAt, user };
+  }
+
+  /** The person just confirmed it is them (email code or passkey): powerful actions are open again for a while. */
+  async markVerified(sessionId: string): Promise<Date> {
+    const verifiedAt = new Date();
+    await this.prisma.staffSession.updateMany({ where: { id: sessionId, revokedAt: null }, data: { verifiedAt } });
+    return verifiedAt;
   }
 
   csrfToken(sessionId: string): string {

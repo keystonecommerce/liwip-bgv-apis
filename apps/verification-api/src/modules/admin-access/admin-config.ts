@@ -33,6 +33,15 @@ export function cookieSettings(): CookieSettings {
 }
 
 /**
+ * How long a sign-in or a fresh confirmation counts as recent for powerful actions
+ * (@RecentSignIn routes). ADMIN_RECENT_SIGN_IN_MINUTES, default 15.
+ */
+export function recentSignInMs(): number {
+  const minutes = Number(process.env.ADMIN_RECENT_SIGN_IN_MINUTES || 15);
+  return (Number.isFinite(minutes) && minutes > 0 ? minutes : 15) * 60_000;
+}
+
+/**
  * Where people sign in. Keystone staff use the control panel; partner and vendor staff and
  * verifiers use the business portal. ADMIN_PANEL_URL is the fallback for both.
  */

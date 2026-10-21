@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, HttpCode, Inject, Param, Patch, Post, Pu
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../common/database/prisma.service";
 import { AdminAccessGuard } from "../admin-access/admin-access.guard";
-import { AdminContext, AuditAction, CurrentAdmin, partnerDb, RequirePermission } from "../admin-access/admin-context";
+import { AdminContext, AuditAction, CurrentAdmin, partnerDb, RequirePermission, RecentSignIn } from "../admin-access/admin-context";
 import { SYSTEM_ROLES } from "../admin-access/admin-permissions";
 import { parseUsageDate, UsageService } from "../usage/usage.service";
 import { id, oneOf, optionalDate, pageOf } from "./input";
@@ -48,6 +48,7 @@ export class PartnersController {
   @Post(":partnerId/disable")
   @HttpCode(200)
   @RequirePermission("partners.manage")
+  @RecentSignIn()
   @AuditAction("partners.disable", { resourceType: "Tenant", resourceParam: "partnerId" })
   disable(@CurrentAdmin() admin: AdminContext, @Param("partnerId") partnerId: string) {
     return this.partners.setStatus(admin, id(partnerId, "partnerId"), "DISABLED");
@@ -56,6 +57,7 @@ export class PartnersController {
   @Post(":partnerId/enable")
   @HttpCode(200)
   @RequirePermission("partners.manage")
+  @RecentSignIn()
   @AuditAction("partners.enable", { resourceType: "Tenant", resourceParam: "partnerId" })
   enable(@CurrentAdmin() admin: AdminContext, @Param("partnerId") partnerId: string) {
     return this.partners.setStatus(admin, id(partnerId, "partnerId"), "ACTIVE");
@@ -78,6 +80,7 @@ export class PartnersController {
   @Post(":partnerId/programs/:programId/disable")
   @HttpCode(200)
   @RequirePermission("partners.manage")
+  @RecentSignIn()
   @AuditAction("programs.disable", { resourceType: "Client", resourceParam: "programId" })
   disableProgram(@CurrentAdmin() admin: AdminContext, @Param("partnerId") partnerId: string, @Param("programId") programId: string) {
     return this.partners.setProgramStatus(admin, id(partnerId, "partnerId"), id(programId, "programId"), "DISABLED");
@@ -86,6 +89,7 @@ export class PartnersController {
   @Post(":partnerId/programs/:programId/enable")
   @HttpCode(200)
   @RequirePermission("partners.manage")
+  @RecentSignIn()
   @AuditAction("programs.enable", { resourceType: "Client", resourceParam: "programId" })
   enableProgram(@CurrentAdmin() admin: AdminContext, @Param("partnerId") partnerId: string, @Param("programId") programId: string) {
     return this.partners.setProgramStatus(admin, id(partnerId, "partnerId"), id(programId, "programId"), "ACTIVE");
@@ -94,6 +98,7 @@ export class PartnersController {
   /** Creates a staff account (if new) with the partner admin role; they sign in by email code. */
   @Post(":partnerId/admins")
   @RequirePermission("partners.manage")
+  @RecentSignIn()
   @AuditAction("partners.admins.invite")
   async inviteAdmin(@CurrentAdmin() admin: AdminContext, @Param("partnerId") partnerId: string, @Body() body: InviteBody) {
     const partner = await this.partners.get(id(partnerId, "partnerId"));
@@ -124,6 +129,7 @@ export class VendorsController {
   @Post(":vendorId/disable")
   @HttpCode(200)
   @RequirePermission("vendors.manage")
+  @RecentSignIn()
   @AuditAction("vendors.disable", { resourceType: "Vendor", resourceParam: "vendorId" })
   disable(@CurrentAdmin() admin: AdminContext, @Param("vendorId") vendorId: string) {
     return this.partners.setVendorStatus(admin, id(vendorId, "vendorId"), "DISABLED");
@@ -132,6 +138,7 @@ export class VendorsController {
   @Post(":vendorId/enable")
   @HttpCode(200)
   @RequirePermission("vendors.manage")
+  @RecentSignIn()
   @AuditAction("vendors.enable", { resourceType: "Vendor", resourceParam: "vendorId" })
   enable(@CurrentAdmin() admin: AdminContext, @Param("vendorId") vendorId: string) {
     return this.partners.setVendorStatus(admin, id(vendorId, "vendorId"), "ACTIVE");
@@ -139,6 +146,7 @@ export class VendorsController {
 
   @Post(":vendorId/admins")
   @RequirePermission("vendors.manage")
+  @RecentSignIn()
   @AuditAction("vendors.admins.invite")
   async inviteAdmin(@CurrentAdmin() admin: AdminContext, @Param("vendorId") vendorId: string, @Body() body: InviteBody) {
     const vendor = await this.partners.vendor(id(vendorId, "vendorId"));
@@ -169,6 +177,7 @@ export class StaffController {
 
   @Post()
   @RequirePermission("staff.manage")
+  @RecentSignIn()
   @AuditAction("staff.invite")
   invite(@CurrentAdmin() admin: AdminContext, @Body() body: InviteBody) {
     const roleKey = oneOf(body?.roleKey, "roleKey", SYSTEM_ROLES.filter((role) => role.scope === "GLOBAL" && role.key !== "VERIFIER").map((role) => role.key));
@@ -184,6 +193,7 @@ export class StaffController {
 
   @Post(":userId/roles")
   @RequirePermission("staff.manage")
+  @RecentSignIn()
   @AuditAction("staff.roles.grant")
   grant(@CurrentAdmin() admin: AdminContext, @Param("userId") userId: string, @Body() body: { roleKey?: string; scopeType?: string; partnerId?: string; vendorId?: string }) {
     return this.staff.grant(admin, id(userId, "userId"), body ?? {});
@@ -191,6 +201,7 @@ export class StaffController {
 
   @Delete(":userId/roles/:bindingId")
   @RequirePermission("staff.manage")
+  @RecentSignIn()
   @AuditAction("staff.roles.revoke")
   revoke(@CurrentAdmin() admin: AdminContext, @Param("userId") userId: string, @Param("bindingId") bindingId: string) {
     return this.staff.revokeBinding(admin, id(userId, "userId"), id(bindingId, "bindingId"));
@@ -199,6 +210,7 @@ export class StaffController {
   @Post(":userId/disable")
   @HttpCode(200)
   @RequirePermission("staff.manage")
+  @RecentSignIn()
   @AuditAction("staff.disable")
   disable(@CurrentAdmin() admin: AdminContext, @Param("userId") userId: string) {
     return this.staff.setStatus(admin, id(userId, "userId"), "DISABLED");
@@ -207,6 +219,7 @@ export class StaffController {
   @Post(":userId/enable")
   @HttpCode(200)
   @RequirePermission("staff.manage")
+  @RecentSignIn()
   @AuditAction("staff.enable")
   enable(@CurrentAdmin() admin: AdminContext, @Param("userId") userId: string) {
     return this.staff.setStatus(admin, id(userId, "userId"), "ACTIVE");
@@ -216,6 +229,7 @@ export class StaffController {
   @Post(":userId/sessions/revoke")
   @HttpCode(200)
   @RequirePermission("staff.manage")
+  @RecentSignIn()
   @AuditAction("staff.sessions.revoke")
   revokeSessions(@CurrentAdmin() admin: AdminContext, @Param("userId") userId: string) {
     return this.staff.revokeSessions(admin, id(userId, "userId"));
@@ -251,15 +265,17 @@ export class PartnerUsersController {
 
   @Post()
   @RequirePermission("users.manage")
+  @RecentSignIn()
   @AuditAction("users.invite")
   async invite(@CurrentAdmin() admin: AdminContext, @Body() body: InviteBody) {
-    const roleKey = oneOf(body?.roleKey, "roleKey", ["PARTNER_ADMIN", "PARTNER_OPERATOR", "PARTNER_VIEWER"] as const);
+    const roleKey = oneOf(body?.roleKey, "roleKey", ["PARTNER_ADMIN", "PARTNER_OPERATOR", "PARTNER_VIEWER", "PARTNER_FINANCE"] as const);
     const partner = await partnerDb(this.prisma, admin).tenant.findFirstOrThrow({ select: { id: true, name: true } });
     return this.staff.invite(admin, body ?? {}, { roleKey, scopeType: "PARTNER", tenantId: partner.id }, partner.name);
   }
 
   @Put(":userId/role")
   @RequirePermission("users.manage")
+  @RecentSignIn()
   @AuditAction("users.role.change")
   changeRole(@CurrentAdmin() admin: AdminContext, @Param("userId") userId: string, @Body() body: { roleKey?: string }) {
     return this.staff.changePartnerRole(admin, id(userId, "userId"), body?.roleKey);
@@ -267,6 +283,7 @@ export class PartnerUsersController {
 
   @Delete(":userId")
   @RequirePermission("users.manage")
+  @RecentSignIn()
   @AuditAction("users.remove")
   remove(@CurrentAdmin() admin: AdminContext, @Param("userId") userId: string) {
     return this.staff.removeFromPartner(admin, id(userId, "userId"));
@@ -288,6 +305,7 @@ export class VendorUsersController {
 
   @Post()
   @RequirePermission("vendor.users.manage")
+  @RecentSignIn()
   @AuditAction("vendor.users.invite")
   async invite(@CurrentAdmin() admin: AdminContext, @Body() body: InviteBody) {
     const roleKey = oneOf(body?.roleKey, "roleKey", ["VENDOR_ADMIN", "FIELD_AGENT"] as const);
@@ -298,6 +316,7 @@ export class VendorUsersController {
 
   @Delete(":userId")
   @RequirePermission("vendor.users.manage")
+  @RecentSignIn()
   @AuditAction("vendor.users.remove")
   remove(@CurrentAdmin() admin: AdminContext, @Param("userId") userId: string) {
     return this.staff.removeFromVendor(admin, id(userId, "userId"));
