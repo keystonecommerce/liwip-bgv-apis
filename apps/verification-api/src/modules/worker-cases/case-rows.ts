@@ -14,14 +14,22 @@ export async function queueRow(store: VerificationStore, queue: VerificationQueu
   await queue.addVerificationJob({ verificationId: row.id, applicationId, type: row.type, inputAfterAttempt: row.attemptCount });
 }
 
-/** The court search runs on its own once name, father's name and address are known. */
+/**
+ * Checks that need no input of their own: the court search once name, father's name and
+ * address are known, and the challan search once the RC check has found the vehicle.
+ */
 export async function startReadyChecks(store: VerificationStore, queue: VerificationQueue, applicationId: string, owner: ApplicationOwner) {
   const application = await store.getApplication(applicationId, owner);
   if (!application) return;
   const { personal, criminal } = application.data;
   const courtReady = Boolean(personal.nameAsAadhaar && criminal?.fatherName && personal.submittedAddress);
-  for (const row of await store.getVerificationsForApplication(applicationId, owner)) {
+  const rows = await store.getVerificationsForApplication(applicationId, owner);
+  const rc = rows.filter((row) => row.type === "RC_V2").at(-1);
+  // Only a vehicle number the RC registry found, so a mistyped number is not searched (and billed) again.
+  const challanReady = Boolean(application.data.vehicle?.registrationNumber && (rc?.status === "VERIFIED" || rc?.status === "MANUAL_REVIEW"));
+  for (const row of rows) {
     if (row.type === "ECOURTS_SEARCH" && row.status === "PENDING" && courtReady) await queueRow(store, queue, row, applicationId, owner);
+    if (row.type === "VEHICLE_CHALLAN" && row.status === "PENDING" && challanReady) await queueRow(store, queue, row, applicationId, owner);
   }
   await store.recalculateApplicationStatus(applicationId, owner);
 }

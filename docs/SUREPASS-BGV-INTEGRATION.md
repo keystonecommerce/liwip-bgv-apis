@@ -11,14 +11,29 @@ The alignment PDF distinguishes 70 PRD checks from 72 provider products. Those a
 - Sandbox API base URL: `https://sandbox.surepass.app`
 - Status: https://status.surepass.app/
 
-Enabled products are listed in `integrations/surepass/products.ts` by their console "API value" slug. Override per environment with `SUREPASS_ENABLED_PRODUCTS`.
+Enabled products are listed in `integrations/surepass/products.ts` by the slug their dashboard path ends in (`identity/rc-text` → `rc-text`). Override per environment with `SUREPASS_ENABLED_PRODUCTS`. A request path that maps to no enabled product is refused before it is sent.
+
+### Production account (enabled 2026-10-15)
+
+Production base URL `https://kyc-api.surepass.app`; docs at https://app.surepass.app/docs/kyc (login). Surepass enabled 31 products. Not enabled on production: Aadhaar OVSE, face liveness, face match, RC V2, e-Shram, telecom and the eCourt CNR/individual-details lookups. Consequences:
+
+- Aadhaar runs through DigiLocker only (`AADHAAR` is offered when either `digilocker` or `aadhaar-ovse` is enabled).
+- The vehicle check (`RC_V2`) calls RC Text (`/rc/rc-full`) when `rc-v2` is not enabled. Both return owner, insurance, PUC, fitness, permit and blacklist fields.
+- The selfie check (`FACE`) is not offered.
+- Credit reports (Equifax, CRIF/CIBIL/Experian PDF), GST, CIN OCR, HSN search and cheque OCR are enabled on the account but deliberately not integrated: no workforce package uses them.
 
 ## Architecture
 
 - `integrations/verification-provider.ts` defines the provider contract and `VERIFICATION_PROVIDER` injection token. Queues, controllers and application services depend on that contract.
 - `integrations/surepass/apis/` contains a file per existing operation, preserving legacy request payloads and routes.
-- `integrations/surepass/checks/` contains a file per new operation, with the documented endpoint, payload mapping and source link.
+- `integrations/surepass/checks/` contains a file per supplementary check (application-linked API), with the documented endpoint, payload mapping, source link and, where it has one, its verdict. `check-registry.ts` lists them.
+- `integrations/surepass/verifiers/` contains a file per queued check (worker cases and packages): which `apis/` call or check request runs it and how its response is judged. `verifier-registry.ts` lists them; a type with no verifier is refused as unsupported.
+- `integrations/surepass/verdicts.ts` holds the shared judging rules (name matching against the worker's official names, expiry dates). `surepass-response.ts` turns the Surepass envelope into a result, or into the provider errors the queue understands.
+- `integrations/surepass/products.ts` maps request paths and checks to the products enabled on the account.
+- `integrations/surepass/surepass.provider.ts` only looks a check up in the registries and passes the response through `surepass-response.ts`; its other methods delegate to `apis/`.
 - `integrations/surepass/surepass.transport.ts` owns bearer authentication, optional customer headers, HTTPS validation, timeout, redirect handling and response decoding.
+
+To add a queued check, add its request to `apis/` (or reuse a `checks/` request), a verifier in `verifiers/`, a line in `verifier-registry.ts` and its products in `products.ts`.
 - `domain/supplementary-checks.ts` defines provider-independent operation names, required inputs, upload constraints and consent categories.
 - `modules/verifications/supplementary-check.service.ts` checks application ownership and consent, validates inputs, claims an idempotent request and persists the result.
 
@@ -72,18 +87,23 @@ The response is a persisted verification record. Retrieve all results through th
 | EMAIL_CHECK | email | — |
 | IFSC | ifsc | — |
 | UPI | upiId | — |
+| BANK_ACCOUNT | accountNumber, ifsc | — |
 | BANK_REPORT | accountNumber, ifsc | — |
 | DIGIPIN | latitude, longitude (decimal strings) | — |
-| VEHICLE_CHALLAN | registrationNumber, chassisNumber, engineNumber | — |
+| ELECTRICITY_BILL | consumerNumber, operatorCode | — |
+| VEHICLE_CHALLAN | registrationNumber | — |
+| PREFILL_BY_MOBILE | mobile | — |
 | AADHAAR_OCR, PAN_OCR, VOTER_OCR, PASSPORT_OCR, AADHAAR_MASK | optional usePdf | file |
-| LICENSE_OCR | optional usePdf | front, back |
+| AADHAAR_OCR_FULL, LICENSE_OCR | optional usePdf | front, back |
 | AML, PEP | name, dob, nationality, address | — |
 | DOCTOR_REGISTRATION | registrationNumber, registrationYear | — |
 | ICSI | membershipNumber | — |
 | EXPERIAN_REPORT | name, mobile, pan | — |
 | CRIF_REPORT | firstName, lastName, mobile, pan | — |
 
-Upload requests accept JPEG, PNG or PDF, up to 5 MiB per file. Multipart boundaries are generated automatically. PDF uploads set `use_pdf=true` unless supplied explicitly. Unexpected fields and missing required fields are rejected before billing. The normal license OCR endpoint uses **front/back**, unlike the other OCR endpoints' **file** field. PASSPORT_OCR uses the documented international-passport OCR endpoint, not passport file-number verification.
+VEHICLE_CHALLAN uses RC Challan Advanced (`/rc/rc-related/challan-advanced`) and passes when no challan is open; open challans go to review. BANK_ACCOUNT (penny drop) and UPI fail when the account does not exist and otherwise go to review for the holder name. ELECTRICITY_BILL needs the board's `operatorCode` (`GET /v1/worker/case/electricity-operators` lists them). PASSPORT_OCR reads the Indian passport (`/ocr/passport`). PREFILL_BY_MOBILE returns a credit-bureau profile (name, date of birth, addresses, ID numbers) linked to the number: evidence only, never shown to the worker.
+
+Upload requests accept JPEG, PNG or PDF, up to 5 MiB per file. Multipart boundaries are generated automatically. PDF uploads set `use_pdf=true` unless supplied explicitly. Unexpected fields and missing required fields are rejected before billing. The license and Aadhaar Full OCR endpoints use **front/back**, unlike the other OCR endpoints' **file** field.
 
 BANK_REPORT is a documented account/IFSC verification report operation. It is **not labeled as penny drop or pennyless** because those product contracts were not publicly available. NAME_MATCH can compare the name returned by bank/UPI checks against the worker's ID name. Fetching a name from a phone number does not prove phone possession; the existing MSG91 OTP flow remains responsible for that.
 
@@ -91,13 +111,24 @@ BANK_REPORT is a documented account/IFSC verification report operation. It is **
 
 Every supplementary check requires recorded worker consent. DIGIPIN additionally requires `application.data.addressConsent=true`; credit reports require `application.data.creditConsent.granted=true`. Worker multipart submission now records address and biometric consent, and package-based face checks require the latter. Direct JSON applications must also include these consent flags when needed.
 
-Only NAME_MATCH (`match_status`) and IFSC (`exists`) have explicit boolean verdicts among the new checks. OCR, mobile/email lookup, address encoding, bank/UPI data, challans, professional registration, watchlists and credit reports return `MANUAL_REVIEW`. API success means data retrieval succeeded, not that the worker passed BGV. CIBIL results also require review. Court search results require review when matches are returned or the expected results array is absent. These court operations do not provide police verification.
+NAME_MATCH (`match_status`), IFSC (`exists`) and VEHICLE_CHALLAN (no open challans) can verify on their own; BANK_ACCOUNT and UPI can fail (`account_exists: false`). OCR, mobile/email lookup, prefill, address encoding, electricity bills, professional registration, watchlists and credit reports return `MANUAL_REVIEW`. API success means data retrieval succeeded, not that the worker passed BGV. CIBIL results also require review. Court search results require review when matches are returned or the expected results array is absent. These court operations do not provide police verification.
 
 The idempotency claim is a database verification row keyed by application and caller request key. Repeating the same key and inputs returns the same record without making another provider call. Reusing a key with different fields/file content returns 409. A new key is a new billable request. Input fingerprints are stored; raw uploaded files are not persisted by supplementary checks.
 
 Supplementary checks execute synchronously and are never automatically retried. Network/timeouts or malformed success responses may have been processed by the provider, so they become `MANUAL_REVIEW` with `PROVIDER_OUTCOME_UNKNOWN`. Queue-based checks also stop automatic retries for these uncertain outcomes. Existing queue retries for explicit transient HTTP failures remain. Supplementary checks cannot use the generic queue retry endpoint: inspect the previous outcome and submit a fresh request key when appropriate.
 
 If the process stops between the database claim and completion, the record remains PROCESSING. Replaying its key will not charge again. Operational reconciliation is needed before resubmitting such a record. This change does not add a background recovery scheduler or a new monitoring subscription system.
+
+## Worker case checks
+
+The worker app (`/v1/worker/case`) offers each selectable check only when one of its products is enabled (`catalog[].available`). Two were added for production:
+
+| Check | Consent | Input | Runs |
+| --- | --- | --- | --- |
+| VEHICLE_CHALLAN | vehicle (needs RC_V2) | none | Queued once the RC check finds the vehicle (verified or in review). Open challans go to review. |
+| ELECTRICITY_BILL | address | `consumerNumber`, `operatorCode` via `POST checks/electricity-bill` | Verified when the name on the bill matches the worker's official name; otherwise review. |
+
+`GET /v1/worker/case/electricity-operators` returns `{ state, operatorCode }[]` for the board picker (cached for a day; empty when the check is not offered).
 
 ## Onboarding integration and remaining work
 

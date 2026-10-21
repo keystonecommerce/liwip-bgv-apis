@@ -28,47 +28,11 @@ import { initializeAadhaarOvse } from "./apis/initialize-aadhaar-ovse";
 import { getAadhaarOvseStatus } from "./apis/get-aadhaar-ovse-status";
 import { getAadhaarOvseResult } from "./apis/get-aadhaar-ovse-result";
 import { initializeDigiLocker } from "./apis/initialize-digi-locker";
+import { listElectricityOperators } from "./apis/list-electricity-operators";
 import { CheckFiles, SupplementaryCheckType, validateCheck } from "../../domain/supplementary-checks";
 import { checkContracts } from "./check-registry";
-import { isoDate } from "../../domain/dates";
-import { matchesAnyName } from "../../domain/name-match";
-
-type CheckStatus = NonNullable<ProviderResponse["status"]>;
-
-/**
- * A successful lookup only proves the document exists. It passes when the name on
- * record matches one of the worker's official names; anything else goes to a reviewer.
- * - `official: false` (no verified Aadhaar or PAN yet): always review.
- * - `dobConfirmed`: the registry found the record with the official date of birth, so
- *   sharing one full word with an official name is enough.
- * - `dobField`: the registry returns a date of birth; it must equal `anchorDob`, and when
- *   it does the looser name rule applies.
- */
-function nameStatus(payload: Record<string, unknown>, returned: string[], options: { dobField?: string; strict?: boolean } = {}): (data: Record<string, unknown>) => CheckStatus {
-  const expected = payload.name;
-  const references = (Array.isArray(expected) ? expected : [expected]).filter((name) => typeof name === "string" && name.trim());
-  return (data) => {
-    if (payload.official === false || !references.length) return "manual_review";
-    const got = returned.map((field) => data[field]).find((value) => typeof value === "string" && value.trim());
-    if (!got) return "manual_review";
-    let dobConfirmed = payload.dobConfirmed === true;
-    if (options.dobField) {
-      const onRecord = isoDate(data[options.dobField]);
-      const anchor = isoDate(payload.anchorDob);
-      if (onRecord && anchor) {
-        if (onRecord !== anchor) return "manual_review";
-        dobConfirmed = true;
-      }
-    }
-    return matchesAnyName(got, references, { loose: dobConfirmed && !options.strict }) ? "verified" : "manual_review";
-  };
-}
-
-function isPastDate(value: unknown): boolean {
-  if (typeof value !== "string" || !value) return false;
-  const date = new Date(value);
-  return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
-}
+import { verifiers } from "./verifier-registry";
+import { toProviderResponse } from "./surepass-response";
 
 @Injectable()
 export class SurepassProvider implements VerificationProvider {
@@ -78,119 +42,18 @@ export class SurepassProvider implements VerificationProvider {
   async executeCheck(type: SupplementaryCheckType, payload: Record<string, unknown>, files: CheckFiles = {}): Promise<ProviderResponse> {
     validateCheck(type, payload, files);
     const contract = checkContracts[type];
-    return this.toVerificationResponse(await this.transport.request(contract.build(payload, files)), type, false,
-      contract.status || (() => "manual_review"));
+    return toProviderResponse(await this.transport.request(contract.build(payload, files)), type, contract.status);
   }
 
+  /** Runs a queued check through its verifier (see verifier-registry.ts). */
   async verify(type: VerificationType, payload: Record<string, unknown>): Promise<ProviderResponse> {
-    if (type === "AADHAAR") {
-      return this.toVerificationResponse(await this.verifyEaadhaar(payload as any), "e-Aadhaar");
-    }
-    if (type === "PAN") {
-      return this.toVerificationResponse(await this.verifyPanComprehensive({ idNumber: String(payload.idNumber) }), "PAN", false,
-        nameStatus(payload, ["full_name", "name"], { dobField: "dob" }));
-    }
-    if (type === "DRIVING_LICENSE") {
-      return this.toVerificationResponse(await this.verifyDrivingLicense({ idNumber: String(payload.licenseNumber), dob: String(payload.dob) }), "Driving Licence", false,
-        (data) => isPastDate(data.doe) ? "manual_review" : nameStatus(payload, ["name"])(data));
-    }
-    if (type === "VOTER_ID") {
-      return this.toVerificationResponse(await this.verifyVoterId({
-        idNumber: String(payload.idNumber),
-        // Surepass takes one name; matching below accepts any reference name.
-        fullName: String(Array.isArray(payload.fullName) ? payload.fullName[0] ?? "" : payload.fullName),
-        dob: String(payload.dob)
-      }), "Voter ID", false, nameStatus({ ...payload, name: payload.fullName }, ["name", "name_on_card"]));
-    }
-    if (type === "ADDRESS_MATCHING") {
-      return this.toVerificationResponse(await this.matchAddresses({ address1: String(payload.address1), address2: String(payload.address2) }), "Address Matching", true);
-    }
-    if (type === "RC_FULL") {
-      return this.toVerificationResponse(await this.verifyRcFull({ idNumber: String(payload.idNumber) }), "RC Full");
-    }
-    if (type === "RC_V2") {
-      return this.toVerificationResponse(await this.verifyRcV2({ idNumber: String(payload.idNumber), enrich: false }), "RC V2", false,
-        // The owner is often a fleet or family member, so a different name goes to review, not failed.
-        nameStatus(payload, ["owner_name"], { strict: true }));
-    }
-    if (type === "CIBIL_SCORE") {
-      return this.toVerificationResponse(await this.verifyCibilScore({
-        pan: String(payload.pan),
-        mobile: String(payload.mobile),
-        name: String(payload.name),
-        gender: String(payload.gender) as "male" | "female"
-      }), "CIBIL Score", false, () => "manual_review");
-    }
-    if (type === "PASSPORT") {
-      return this.toVerificationResponse(await this.verifyPassportDetails({ fileNumber: String(payload.fileNumber), dob: String(payload.dob) }), "Passport", false,
-        nameStatus(payload, ["full_name", "name"]));
-    }
-    if (type === "FACE_LIVENESS") {
-      return this.toVerificationResponse(await this.verifyFaceLiveness(payload as any), "Face Liveness", false, (data) => data.live === true ? "verified" : "failed");
-    }
-    if (type === "FACE_MATCH") {
-      return this.toVerificationResponse(await this.verifyFaceMatch(payload as any), "Face Match", false, (data) => data.match_status === true ? "verified" : "failed");
-    }
-    if (type === "EMPLOYMENT_HISTORY") {
-      return this.toVerificationResponse(await this.verifyEmploymentHistory({ uan: String(payload.uan) }), "Employment History");
-    }
-    if (type === "CURRENT_EMPLOYMENT") {
-      return this.toVerificationResponse(await this.verifyCurrentEmployment({
-        panNumber: payload.panNumber ? String(payload.panNumber) : undefined,
-        mobileNumber: payload.mobileNumber ? String(payload.mobileNumber) : undefined,
-        uanNumber: payload.uanNumber ? String(payload.uanNumber) : undefined,
-        employerName: payload.employerName ? String(payload.employerName) : undefined,
-        employeeName: payload.employeeName ? String(payload.employeeName) : undefined
-      }), "Current Employment");
-    }
-    if (type === "ECOURTS_SEARCH") {
-      return this.toVerificationResponse(
-        await this.searchEcourts({
-          name: String(payload.name),
-          fatherName: String(payload.fatherName),
-          address: String(payload.address),
-          year: payload.year ? String(payload.year) : undefined,
-          state: payload.state ? String(payload.state) : undefined
-        }),
-        "Court Records",
-        false,
-        (data) => Array.isArray(data.result) ? (data.result.length > 0 ? "manual_review" : "verified") : "manual_review"
-      );
-    }
-
-    const error = new UnrecoverableError(`Surepass adapter does not support ${type} yet`) as Error & { code?: string };
-    error.code = "UNSUPPORTED_VERIFICATION_TYPE";
-    throw error;
-  }
-
-  private toVerificationResponse(raw: GstProviderResponse, label: string, addressMatch = false, resolveStatus?: (data: Record<string, unknown>) => NonNullable<ProviderResponse["status"]>): ProviderResponse {
-    const body = raw.body as {
-      success?: boolean;
-      data?: Record<string, unknown> | null;
-      message?: string;
-      message_code?: string;
-      status_code?: number;
-    } | null;
-    if (raw.statusCode >= 400 || body?.success === false || (typeof body?.status_code === "number" && body.status_code >= 400)) {
-      const message = `Surepass ${label} could not complete the check (HTTP ${raw.statusCode})`;
-      const effectiveStatus = typeof body?.status_code === "number" ? body.status_code : raw.statusCode;
-      const error = (effectiveStatus !== 429
-        ? new UnrecoverableError(message)
-        : new Error(message)) as Error & { code?: string; providerResponse?: Record<string, unknown> | null };
-      error.code = effectiveStatus === 429 || effectiveStatus >= 500 ? "PROVIDER_UNAVAILABLE" : "PROVIDER_HTTP_ERROR";
-      error.providerResponse = { status_code: effectiveStatus, success: body?.success ?? false, message_code: body?.message_code ?? null, message: typeof body?.message === "string" ? body.message.slice(0, 200) : null };
+    const verifier = verifiers[type];
+    if (!verifier) {
+      const error = new UnrecoverableError(`Surepass adapter does not support ${type} yet`) as Error & { code?: string };
+      error.code = "UNSUPPORTED_VERIFICATION_TYPE";
       throw error;
     }
-    if (body?.success !== true || !body.data || typeof body.data !== "object" || Array.isArray(body.data)) {
-      const error = new UnrecoverableError(`Surepass ${label} returned an incomplete response; review before retrying`) as Error & { code?: string };
-      error.code = "PROVIDER_OUTCOME_UNKNOWN";
-      throw error;
-    }
-    return {
-      requestId: typeof body.data.client_id === "string" ? body.data.client_id : undefined,
-      status: resolveStatus ? resolveStatus(body.data) : addressMatch ? (body.data.match_status === true ? "verified" : body.data.match_status === false ? "failed" : "manual_review") : "manual_review",
-      data: body.data
-    };
+    return toProviderResponse(await verifier.call(this.transport, payload), verifier.label, verifier.verdict?.(payload));
   }
 
   async verifyDrivingLicense(payload: { idNumber: string; dob: string }): Promise<GstProviderResponse> {
@@ -296,5 +159,9 @@ export class SurepassProvider implements VerificationProvider {
 
   async initializeDigiLocker(payload: DigiLockerInitializeData): Promise<GstProviderResponse> {
     return initializeDigiLocker(this.transport, payload);
+  }
+
+  async listElectricityOperators(): Promise<GstProviderResponse> {
+    return listElectricityOperators(this.transport);
   }
 }

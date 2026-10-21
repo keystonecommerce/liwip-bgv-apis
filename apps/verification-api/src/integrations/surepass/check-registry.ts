@@ -5,9 +5,12 @@ import { MOBILE_NAME } from "./checks/mobile-name";
 import { EMAIL_CHECK } from "./checks/email-check";
 import { IFSC } from "./checks/ifsc";
 import { UPI } from "./checks/upi";
+import { BANK_ACCOUNT } from "./checks/bank-account";
 import { BANK_REPORT } from "./checks/bank-report";
 import { DIGIPIN } from "./checks/digipin";
+import { ELECTRICITY_BILL } from "./checks/electricity-bill";
 import { VEHICLE_CHALLAN } from "./checks/vehicle-challan";
+import { PREFILL_BY_MOBILE } from "./checks/prefill-by-mobile";
 import { AML } from "./checks/aml";
 import { PEP } from "./checks/pep";
 import { DOCTOR_REGISTRATION } from "./checks/doctor-registration";
@@ -15,6 +18,7 @@ import { ICSI } from "./checks/icsi";
 import { EXPERIAN_REPORT } from "./checks/experian-report";
 import { CRIF_REPORT } from "./checks/crif-report";
 import { AADHAAR_OCR } from "./checks/aadhaar-ocr";
+import { AADHAAR_OCR_FULL } from "./checks/aadhaar-ocr-full";
 import { PAN_OCR } from "./checks/pan-ocr";
 import { VOTER_OCR } from "./checks/voter-ocr";
 import { PASSPORT_OCR } from "./checks/passport-ocr";
@@ -27,9 +31,12 @@ export const checkContracts: Record<SupplementaryCheckType, CheckContract> = {
   EMAIL_CHECK,
   IFSC,
   UPI,
+  BANK_ACCOUNT,
   BANK_REPORT,
   DIGIPIN,
+  ELECTRICITY_BILL,
   VEHICLE_CHALLAN,
+  PREFILL_BY_MOBILE,
   AML,
   PEP,
   DOCTOR_REGISTRATION,
@@ -37,6 +44,7 @@ export const checkContracts: Record<SupplementaryCheckType, CheckContract> = {
   EXPERIAN_REPORT,
   CRIF_REPORT,
   AADHAAR_OCR,
+  AADHAAR_OCR_FULL,
   PAN_OCR,
   VOTER_OCR,
   PASSPORT_OCR,

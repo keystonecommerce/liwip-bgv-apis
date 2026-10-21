@@ -6,6 +6,7 @@ import IORedis from "ioredis";
 import { SensitiveVerificationInputs, VerificationJob, VerificationType } from "../../domain/verification.types";
 import { VERIFICATION_PROVIDER, VerificationProvider } from "../../integrations/verification-provider";
 import { VerificationStore } from "./verification.repository";
+import { startReadyChecks } from "../worker-cases/case-rows";
 import { isoDate } from "../../domain/dates";
 import { nameAnchors, panReferenceNames } from "../../domain/name-match";
 
@@ -81,6 +82,9 @@ function applicationToPayload(
   if (type === "RC_FULL") return { idNumber: vehicle.registrationNumber };
   // The RC lookup takes no date of birth, so its owner name is always matched strictly.
   if (type === "RC_V2") return { idNumber: vehicle.registrationNumber, name: names, official: match.official };
+  if (type === "VEHICLE_CHALLAN") return { registrationNumber: vehicle.registrationNumber };
+  // An electricity bill takes no date of birth either, so its name is matched strictly.
+  if (type === "ELECTRICITY_BILL") return { consumerNumber: data.addressProof?.consumerNumber, operatorCode: data.addressProof?.operatorCode, name: names, official: match.official };
   if (type === "CIBIL_SCORE") return { pan: personal.panNumber, mobile: personal.phone, name: personal.nameAsAadhaar, gender: personal.gender };
   if (type === "PASSPORT") return { fileNumber: personal.passportFileNumber, dob: documentDob ?? personal.dateOfBirth, name: names, ...anchored };
   if (type === "FACE_LIVENESS" && sensitiveInputs?.selfie) return sensitiveInputs.selfie as unknown as Record<string, unknown>;
@@ -113,6 +117,8 @@ function rejectionReason(type: VerificationType): string {
     VOTER_ID: "This voter ID was not found. Check it and try again.",
     PASSPORT: "This passport file number was not found for your date of birth. Check it and try again.",
     RC_V2: "This vehicle number was not found. Check it and try again.",
+    VEHICLE_CHALLAN: "Traffic challans could not be checked for this vehicle. Try again later.",
+    ELECTRICITY_BILL: "This electricity connection was not found. Check the consumer number and board, and try again.",
     EMPLOYMENT_HISTORY: "No employment record was found for this UAN. Check it and try again.",
     ECOURTS_SEARCH: "The court records search could not run. Check your father's name and address, or try again later.",
     FACE_LIVENESS: "Your selfie could not be checked. Take it again in good light.",
@@ -224,6 +230,8 @@ export class VerificationQueue implements OnModuleInit, OnModuleDestroy {
       // Provider responded with a negative result (e.g. record not found / no
       // match). The lookup still happened → billable.
     }
+    // The challan search waits for the RC check to find the vehicle.
+    if (verification.type === "RC_V2" && application.workerCase && response.status !== "failed") await startReadyChecks(this.store, this, application.id, owner);
     await this.store.recalculateApplicationStatus(application.id, owner);
     await this.purgeSensitiveInputsIfDone(application.id);
   }
