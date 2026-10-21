@@ -27,6 +27,10 @@ function base64Url(value: string | Buffer): string {
   return Buffer.from(value).toString("base64url");
 }
 
+/**
+ * @deprecated Legacy password login for the field app (/v1/portal-auth). The admin panel
+ * uses /v1/admin/auth (email OTP and passkeys, cookie sessions, role bindings) instead.
+ */
 @Injectable()
 export class PortalAuthService {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
@@ -37,7 +41,8 @@ export class PortalAuthService {
     if (!email || !password) throw new UnauthorizedException("Email and password are required");
 
     const user = await this.prisma.portalUser.findUnique({ where: { email } });
-    const valid = Boolean(user && user.status === "ACTIVE" && await verifyPortalPassword(password, user.passwordHash));
+    // Staff invited to the admin panel have no password; they sign in by email code or passkey.
+    const valid = Boolean(user && user.status === "ACTIVE" && user.passwordHash && await verifyPortalPassword(password, user.passwordHash));
     if (!user || !valid) throw new UnauthorizedException("Email or password is incorrect");
     if (!portalRoles.includes(user.role as PortalRole)) throw new UnauthorizedException("This account has an unsupported portal role");
     if (input.role && input.role !== user.role) throw new UnauthorizedException("This account does not have access to the selected portal");
@@ -96,8 +101,8 @@ export class PortalAuthService {
     };
   }
 
-  private async validateOwnership(user: { role: string; tenantId: string | null; clientId: string | null }) {
-    if (user.role.startsWith("CORPORATE_") && (!user.tenantId || !user.clientId)) throw new UnauthorizedException("Corporate account ownership is missing");
+  private async validateOwnership(user: { role: string | null; tenantId: string | null; clientId: string | null }) {
+    if (user.role?.startsWith("CORPORATE_") && (!user.tenantId || !user.clientId)) throw new UnauthorizedException("Corporate account ownership is missing");
     if (user.clientId) {
       const client = await this.prisma.client.findFirst({ where: { id: user.clientId, tenantId: user.tenantId ?? "", status: "ACTIVE", tenant: { status: "ACTIVE" } }, select: { id: true } });
       if (!client) throw new UnauthorizedException("Partner account is inactive");

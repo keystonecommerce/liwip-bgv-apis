@@ -17,11 +17,16 @@ const safeEqual = (a: string, b: string): boolean => {
  * Guards the /admin surface with a single operator key (env ADMIN_API_KEY),
  * constant-time compared. Fails CLOSED: if ADMIN_API_KEY is unset the whole
  * admin API is unavailable rather than open.
+ *
+ * @deprecated The admin panel API (/v1/admin/*, staff sessions and role bindings) replaces
+ * this shared key. These routes keep working until the panel covers them; responses carry
+ * a Deprecation header.
  */
 @Injectable()
 export class AdminGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<HeaderRequest>();
+    context.switchToHttp().getResponse<{ setHeader?: (name: string, value: string) => void }>().setHeader?.("Deprecation", "true");
     const expected = process.env.ADMIN_API_KEY?.trim();
     if (!expected) {
       throw new ServiceUnavailableException("Admin API is not configured (set ADMIN_API_KEY)");

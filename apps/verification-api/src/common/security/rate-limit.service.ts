@@ -14,7 +14,11 @@ export const LIMITS = {
   checkPerWorkerHour: { env: "LIMIT_CHECKS_PER_WORKER_HOUR", limit: 15, window: 3600, message: "You have submitted many checks this hour. Try again later." },
   checkPerWorkerDay: { env: "LIMIT_CHECKS_PER_WORKER_DAY", limit: 40, window: 86400, message: "You have reached today's limit for checks. Try again tomorrow." },
   aadhaarPerWorker: { env: "LIMIT_AADHAAR_PER_WORKER_HOUR", limit: 10, window: 3600, message: "Too many Aadhaar attempts. Try again in an hour." },
-  caseEditsPerWorker: { env: "LIMIT_CASE_EDITS_PER_WORKER_HOUR", limit: 30, window: 3600, message: "Too many changes. Try again later." }
+  caseEditsPerWorker: { env: "LIMIT_CASE_EDITS_PER_WORKER_HOUR", limit: 30, window: 3600, message: "Too many changes. Try again later." },
+  staffOtpSendPerIp: { env: "LIMIT_STAFF_OTP_SEND_PER_IP_HOUR", limit: 20, window: 3600, message: "Too many codes requested from this network. Try again later." },
+  staffSignInPerIp: { env: "LIMIT_STAFF_SIGN_IN_PER_IP_15MIN", limit: 30, window: 900, message: "Too many sign-in attempts. Wait a few minutes and try again." },
+  cardVerifyPerIp: { env: "LIMIT_CARD_VERIFY_PER_IP_MIN", limit: 30, window: 60, message: "Too many card checks. Wait a minute and try again." },
+  cardLookupPerStaff: { env: "LIMIT_CARD_LOOKUP_PER_STAFF_HOUR", limit: 300, window: 3600, message: "Too many card lookups. Try again later." }
 } as const;
 
 export type LimitName = keyof typeof LIMITS;

@@ -7,6 +7,9 @@ import { AdminService, CreatePartnerInput, IssueKeyInput } from "./admin.service
 /**
  * Operator-only provisioning + audit surface, guarded by X-Admin-Key.
  * Partners never touch these routes.
+ *
+ * @deprecated Use the admin panel API (/v1/admin/*, see docs/ADMIN-ACCESS.md). Kept working
+ * for existing scripts; every response carries a Deprecation header.
  */
 @Controller("admin")
 @UseGuards(AdminGuard)

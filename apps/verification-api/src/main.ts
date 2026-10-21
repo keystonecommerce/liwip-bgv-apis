@@ -9,7 +9,8 @@ import { loadEnv } from "./config/env";
 loadEnv();
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // rawBody: Cashfree webhook signatures are checked against the exact bytes received.
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   const isProduction = process.env.NODE_ENV === "production";
 
   // Trust the reverse proxy so req.ip / rate-limit tracking reflect the real
@@ -23,10 +24,12 @@ async function bootstrap() {
   // Strip unknown properties from validated DTOs and coerce types.
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 
-  const allowedOrigins = String(process.env.CORS_ORIGINS || "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
+  // CORS_ORIGINS plus the admin panel's origins (ADMIN_PANEL_ORIGINS). The admin panel sends
+  // its session cookie, so only these exact origins may make credentialed requests.
+  const allowedOrigins = [...new Set([process.env.CORS_ORIGINS, process.env.ADMIN_PANEL_ORIGINS]
+    .flatMap((value) => String(value || "").split(","))
+    .map((value) => value.trim().replace(/\/+$/, ""))
+    .filter(Boolean))];
 
   // Fail CLOSED: an unset CORS_ORIGINS must NOT open the API to every origin in
   // production. Explicit origins are always honoured; dev stays permissive.
