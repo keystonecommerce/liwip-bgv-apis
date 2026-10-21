@@ -147,6 +147,8 @@ export class VerificationStore {
           data: types.map((type, index) => ({
             id: verificationIds[index],
             applicationId,
+            tenantId: owner.tenantId,
+            clientId: owner.clientId,
             type,
             status: "QUEUED",
             provider,
@@ -197,9 +199,10 @@ export class VerificationStore {
   }
 
   async createSupplementaryVerification(id: string, applicationId: string, type: VerificationType, provider: string, fingerprint: string): Promise<{ created: boolean; verification: VerificationRecord }> {
+    const owner = await this.prisma.application.findUniqueOrThrow({ where: { id: applicationId }, select: { tenantId: true, clientId: true } });
     try {
       const record = await this.prisma.verification.create({ data: {
-        id, applicationId, type, provider, status: "PROCESSING", attemptCount: 1,
+        id, applicationId, tenantId: owner.tenantId, clientId: owner.clientId, type, provider, status: "PROCESSING", attemptCount: 1,
         startedAt: new Date(), result: { requestFingerprint: fingerprint }
       } });
       return { created: true, verification: this.mapVerification(record) };
@@ -360,8 +363,9 @@ export class VerificationStore {
   async addVerifications(applicationId: string, rows: Array<{ type: VerificationType; status: VerificationStatus }>): Promise<void> {
     if (!rows.length) return;
     const provider = process.env.VERIFICATION_PROVIDER || "surepass";
+    const owner = await this.prisma.application.findUniqueOrThrow({ where: { id: applicationId }, select: { tenantId: true, clientId: true } });
     await this.prisma.verification.createMany({ data: rows.map((row) => ({
-      id: `verification_${randomUUID()}`, applicationId, type: row.type, status: row.status, provider, attemptCount: 0
+      id: `verification_${randomUUID()}`, applicationId, tenantId: owner.tenantId, clientId: owner.clientId, type: row.type, status: row.status, provider, attemptCount: 0
     })) });
   }
 

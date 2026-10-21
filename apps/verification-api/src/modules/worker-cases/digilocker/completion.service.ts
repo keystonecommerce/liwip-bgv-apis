@@ -95,7 +95,7 @@ export class DigiLockerCompletion implements OnModuleDestroy {
       await this.prisma.aadhaarPhoto.upsert({
         where: { applicationId: application.id },
         update: { bytes, contentType: "image/jpeg" },
-        create: { applicationId: application.id, bytes, contentType: "image/jpeg" }
+        create: { applicationId: application.id, tenantId: application.tenantId, clientId: application.clientId, bytes, contentType: "image/jpeg" }
       });
     }
     const careOf = text("care_of");

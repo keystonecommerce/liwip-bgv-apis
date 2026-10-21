@@ -290,13 +290,13 @@ export class WorkerCaseService {
       await this.prisma.aadhaarPhoto.upsert({
         where: { applicationId: application.id },
         update: {},
-        create: { applicationId: application.id, bytes: photo.buffer, contentType: photo.mimetype }
+        create: { applicationId: application.id, tenantId: application.tenantId, clientId: application.clientId, bytes: photo.buffer, contentType: photo.mimetype }
       });
       // The selfie becomes the card photo once face match passes; kept now, shown only on the card.
       await this.prisma.workerPhoto.upsert({
         where: { applicationId: application.id },
         update: { bytes: selfie.buffer, contentType: selfie.mimetype },
-        create: { applicationId: application.id, bytes: selfie.buffer, contentType: selfie.mimetype }
+        create: { applicationId: application.id, tenantId: application.tenantId, clientId: application.clientId, bytes: selfie.buffer, contentType: selfie.mimetype }
       });
       this.store.setSensitiveInputs(application.id, {
         ...this.store.getSensitiveInputs(application.id),
