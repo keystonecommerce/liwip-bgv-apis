@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import { createHash } from "node:crypto";
 import { hashPortalPassword } from "../apps/verification-api/src/modules/portal-auth/password";
+import { ensureLiwipDirect, provisionPlatformAdmin } from "../apps/verification-api/src/modules/admin-access/bootstrap";
 
 const prisma = new PrismaClient();
 
@@ -143,9 +144,12 @@ async function main(): Promise<void> {
   });
   const partnerClient = await prisma.client.upsert({
     where: { tenantId_code: { tenantId: partnerTenant.id, code: "PLATFORM" } },
-    update: { name: "Demo Partner Platform", status: "ACTIVE" },
-    create: { id: "client_demo_partner_platform", tenantId: partnerTenant.id, code: "PLATFORM", name: "Demo Partner Platform", status: "ACTIVE" }
+    update: { name: "Demo Partner Platform", status: "ACTIVE", corporateCode: "DEMO-PARTNER" },
+    create: { id: "client_demo_partner_platform", tenantId: partnerTenant.id, code: "PLATFORM", name: "Demo Partner Platform", status: "ACTIVE", corporateCode: "DEMO-PARTNER" }
   });
+  await ensureLiwipDirect(prisma);
+  // Admin panel: the first Keystone platform admin (signs in by email code; dev codes are logged).
+  if (process.env.ADMIN_BOOTSTRAP_EMAIL) await provisionPlatformAdmin(prisma, process.env.ADMIN_BOOTSTRAP_EMAIL, "Keystone admin");
   const partnerKeyHash = createHash("sha256").update(secondDevelopmentApiKey).digest("hex");
   await prisma.apiKey.upsert({
     where: { keyHash: partnerKeyHash },
@@ -274,6 +278,8 @@ async function main(): Promise<void> {
     create: {
       id: "verification_seed_field_demo",
       applicationId: "app_seed_field_demo",
+      tenantId: partnerTenant.id,
+      clientId: partnerClient.id,
       type: "CURRENT_ADDRESS",
       status: "MANUAL_REVIEW",
       provider: "field",

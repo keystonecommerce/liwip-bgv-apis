@@ -8,31 +8,40 @@ datasource db {
 }
 
 model Application {
-  apiKeyId          String?
-  id                String                @id
-  tenantId          String
-  clientId          String
-  packageId         String?
-  status            String
-  data              Json
-  legacyTestOptions Json?                 @map("testOptions")
+  apiKeyId              String?
+  id                    String                @id
+  tenantId              String
+  clientId              String
+  packageId             String?
+  status                String
+  data                  Json
+  legacyTestOptions     Json?                 @map("testOptions")
   /// Set for cases a worker opens themselves after OTP (91XXXXXXXXXX).
-  workerPhone       String?
+  workerPhone           String?
   /// Liwip BGV Card number, assigned when the case opens and kept when the card is issued.
-  cardNumber        String?               @unique
-  createdAt         DateTime              @default(now())
-  updatedAt         DateTime              @updatedAt
-  package           VerificationPackage?  @relation(fields: [packageId], references: [id])
-  tenant            Tenant                @relation(fields: [tenantId], references: [id])
-  client            Client                @relation(fields: [clientId, tenantId], references: [id, tenantId], map: "Application_client_owner_fkey")
-  verifications     Verification[]
-  documents         ApplicationDocument[]
-  verificationCard  VerificationCard?
-  fieldTasks        FieldTask[]
-  providerCalls     ProviderCall[]
-  aadhaarPhoto      AadhaarPhoto?
-  workerPhoto       WorkerPhoto?
-  initiatingKey     ApiKey?               @relation(fields: [apiKeyId, clientId], references: [id, clientId], onDelete: NoAction, map: "Application_key_owner_fkey")
+  cardNumber            String?               @unique
+  /// The worker's relationship with this partner. ENDED: the partner keeps the case
+  /// as it was at relationshipEndedAt (relationshipSnapshot) and sees no later updates.
+  relationshipStatus    String                @default("ACTIVE")
+  relationshipEndedAt   DateTime?
+  relationshipEndReason String?
+  /// Case status when the relationship ended; partner filters use it for ENDED cases.
+  relationshipEndStatus String?
+  relationshipSnapshot  Json?
+  relationshipEndedById String?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  package               VerificationPackage?  @relation(fields: [packageId], references: [id])
+  tenant                Tenant                @relation(fields: [tenantId], references: [id])
+  client                Client                @relation(fields: [clientId, tenantId], references: [id, tenantId], map: "Application_client_owner_fkey")
+  verifications         Verification[]
+  documents             ApplicationDocument[]
+  verificationCard      VerificationCard?
+  fieldTasks            FieldTask[]
+  providerCalls         ProviderCall[]
+  aadhaarPhoto          AadhaarPhoto?
+  workerPhoto           WorkerPhoto?
+  initiatingKey         ApiKey?               @relation(fields: [apiKeyId, clientId], references: [id, clientId], onDelete: NoAction, map: "Application_key_owner_fkey")
 
   @@unique([id, tenantId, clientId])
   @@index([tenantId, createdAt])
@@ -41,33 +50,47 @@ model Application {
   @@index([packageId])
   @@index([status])
   @@index([createdAt])
+  @@index([tenantId, relationshipStatus])
 }
 
 model VerificationCard {
-  id            String      @id
-  applicationId String      @unique
-  tenantId      String
-  clientId      String
-  cardNumber    String      @unique
-  publicId      String      @unique
-  status        String      @default("ACTIVE")
-  issuedAt      DateTime    @default(now())
-  expiresAt     DateTime
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-  application   Application @relation(fields: [applicationId, tenantId, clientId], references: [id, tenantId, clientId], onDelete: Cascade, map: "VerificationCard_application_owner_fkey")
-  scans         CardScan[]
+  id             String              @id
+  applicationId  String              @unique
+  tenantId       String
+  clientId       String
+  cardNumber     String              @unique
+  publicId       String              @unique
+  status         String              @default("ACTIVE")
+  issuedAt       DateTime            @default(now())
+  expiresAt      DateTime
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  application    Application         @relation(fields: [applicationId, tenantId, clientId], references: [id, tenantId, clientId], onDelete: Cascade, map: "VerificationCard_application_owner_fkey")
+  scans          CardScan[]
+  verifierGrants VerifierCardGrant[]
 
   @@unique([applicationId, tenantId, clientId])
+  @@unique([id, tenantId, clientId])
   @@index([tenantId, clientId, issuedAt])
   @@index([status, expiresAt])
 }
 
+/// A partner (e.g. Zomato), or the Liwip Direct tenant for individuals (kind DIRECT).
 model Tenant {
   id                  String                @id
   slug                String                @unique
   name                String
   status              String                @default("ACTIVE")
+  /// PARTNER | DIRECT
+  kind                String                @default("PARTNER")
+  legalName           String?
+  gstin               String?
+  /// { line1, line2?, city, state, pincode, country }
+  address             Json?
+  /// [{ name, email?, phone?, role? }]
+  contacts            Json?
+  logoUrl             String?
+  disabledAt          DateTime?
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
   clients             Client[]
@@ -75,16 +98,32 @@ model Tenant {
   aadhaarOvseSessions AadhaarOvseSession[]
   documents           ApplicationDocument[]
   portalUsers         PortalUser[]
+  staffBindings       StaffRoleBinding[]
+  discountRules       DiscountRule[]
+  partnerPrices       PartnerPrice[]
+  orders              Order[]
+  seatLedger          SeatLedger[]
+  bulkUploads         BulkUpload[]
+  invites             Invite[]
+  checkRates          CheckRate[]
+  prepaidCases        PrepaidCase[]
+  usageCharges        UsageCharge[]
+  usageStatements     UsageStatement[]
 
   @@index([status])
 }
 
+/// A partner's program (e.g. Zomato Delivery). Workers join it with its corporate code.
 model Client {
   id                  String                @id
   tenantId            String
   code                String
   name                String
   status              String                @default("ACTIVE")
+  /// What a worker types to join this program. Unique across all programs.
+  corporateCode       String?               @unique
+  description         String?
+  disabledAt          DateTime?
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
   tenant              Tenant                @relation(fields: [tenantId], references: [id])
@@ -100,21 +139,35 @@ model Client {
   @@index([tenantId, status])
 }
 
+/// A staff account (Keystone staff, partner staff, vendors, field agents, verifiers).
+/// Access comes only from StaffRoleBinding rows. `role` and `passwordHash` belong to the
+/// deprecated password login of /v1/portal-auth (field app) and are never read by /v1/admin.
 model PortalUser {
-  id           String      @id
-  tenantId     String?
-  clientId     String?
-  email        String      @unique
-  displayName  String
-  passwordHash String
-  role         String
-  status       String      @default("ACTIVE")
-  lastLoginAt  DateTime?
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
-  tenant       Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  client       Client?     @relation(fields: [clientId, tenantId], references: [id, tenantId], onDelete: Cascade, map: "PortalUser_client_owner_fkey")
-  fieldTasks   FieldTask[] @relation("AgentTasks")
+  id             String             @id
+  /// Home partner, for partner staff. Scope still comes from bindings.
+  tenantId       String?
+  clientId       String?
+  email          String             @unique
+  displayName    String
+  /// Deprecated: legacy portal password login only. Staff sign in by email OTP or passkey.
+  passwordHash   String?
+  /// Deprecated: legacy portal role. Never used by the admin access layer.
+  role           String?
+  /// ACTIVE | DISABLED
+  status         String             @default("ACTIVE")
+  /// Bumped to revoke every session of this account.
+  sessionVersion Int                @default(0)
+  invitedById    String?
+  lastLoginAt    DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  tenant         Tenant?            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  client         Client?            @relation(fields: [clientId, tenantId], references: [id, tenantId], onDelete: Cascade, map: "PortalUser_client_owner_fkey")
+  fieldTasks     FieldTask[]        @relation("AgentTasks")
+  bindings       StaffRoleBinding[]
+  sessions       StaffSession[]
+  passkeys       StaffPasskey[]
+  verifierAccess VerifierAccess?
 
   @@index([tenantId, role, status])
   @@index([clientId, role, status])
@@ -169,7 +222,9 @@ model UsageEvent {
 // deletion and never blocks a request; ids are plain strings.
 model AuditLog {
   id           String   @id
-  actorType    String // PARTNER | ADMIN | SYSTEM
+  actorType    String // PARTNER | ADMIN | SYSTEM | STAFF | VERIFIER | PUBLIC
+  /// Staff account (PortalUser) behind an admin-panel action or lookup.
+  actorUserId  String?
   tenantId     String?
   tenantSlug   String?
   clientId     String?
@@ -188,9 +243,12 @@ model AuditLog {
   durationMs   Int?
   outcome      String // SUCCESS | CLIENT_ERROR | SERVER_ERROR | REJECTED
   message      String?
+  metadata     Json?
   createdAt    DateTime @default(now())
 
   @@index([tenantId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([resourceId, createdAt])
   @@index([clientId, createdAt])
   @@index([apiKeyId, createdAt])
   @@index([action, createdAt])
@@ -210,17 +268,32 @@ model VerificationPackage {
   displayOrder         Int           @default(0)
   isActive             Boolean       @default(true)
   checks               Json
+  /// RIDER, DRIVER, HOME_SERVICES_PRO, CUSTOMER_REP, ... (null for add-ons)
+  role                 String?
+  /// PEOPLE | VEHICLE
+  module               String        @default("PEOPLE")
+  /// DRAFT | PUBLISHED | RETIRED. Only one PUBLISHED version per code; isActive mirrors it.
+  status               String        @default("PUBLISHED")
+  /// Price per person in paise. priceInr is kept for older readers.
+  listPricePaise       Int?
+  publishedAt          DateTime?
+  createdById          String?
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
   applications         Application[]
+  orderLines           OrderLine[]
 
   @@unique([code, version])
+  @@index([code, status])
   @@index([code, isActive])
 }
 
 model Verification {
   id                String         @id
   applicationId     String
+  /// Copied from the application so scoped queries filter this table directly.
+  tenantId          String
+  clientId          String
   type              String
   status            String
   provider          String
@@ -234,12 +307,13 @@ model Verification {
   startedAt         DateTime?
   completedAt       DateTime?
   updatedAt         DateTime       @updatedAt
-  application       Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  application       Application    @relation(fields: [applicationId, tenantId, clientId], references: [id, tenantId, clientId], onDelete: Cascade, map: "Verification_application_owner_fkey")
   fieldTask         FieldTask?
   providerCalls     ProviderCall[]
 
   @@unique([id, applicationId])
   @@index([applicationId])
+  @@index([tenantId, clientId, type])
   @@index([status])
   @@index([type])
 }
@@ -415,31 +489,586 @@ model WorkerPasskey {
 /// Encrypted at rest by RDS/KMS; deleted with the case.
 model AadhaarPhoto {
   applicationId String      @id
+  tenantId      String
+  clientId      String
   contentType   String
   bytes         Bytes
   createdAt     DateTime    @default(now())
-  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  application   Application @relation(fields: [applicationId, tenantId, clientId], references: [id, tenantId, clientId], onDelete: Cascade, map: "AadhaarPhoto_application_owner_fkey")
+
+  @@unique([applicationId, tenantId, clientId])
 }
 
 /// The worker's face-matched selfie, shown on their card and verify page.
 /// Encrypted at rest by RDS/KMS; deleted with the case.
 model WorkerPhoto {
   applicationId String      @id
+  tenantId      String
+  clientId      String
   contentType   String
   bytes         Bytes
   createdAt     DateTime    @default(now())
-  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  application   Application @relation(fields: [applicationId, tenantId, clientId], references: [id, tenantId, clientId], onDelete: Cascade, map: "WorkerPhoto_application_owner_fkey")
+
+  @@unique([applicationId, tenantId, clientId])
 }
 
 /// One row per check of a card: QR from the app, the fixed (shared or printed) link, or a typed number.
 model CardScan {
-  id        String           @id
-  cardId    String
-  via       String
-  result    String
-  ipHash    String
-  scannedAt DateTime         @default(now())
-  card      VerificationCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  id             String           @id
+  cardId         String
+  /// The card owner's partner and program, copied for uniform scoping.
+  tenantId       String
+  clientId       String
+  /// PRINT (fixed QR or link) | APP (live QR) | NUMBER (typed card number)
+  via            String
+  result         String
+  ipHash         String
+  /// PUBLIC | VERIFIER | PARTNER | KEYSTONE: who looked the card up.
+  viewerType     String           @default("PUBLIC")
+  /// Staff account that looked the card up (null for anonymous public scans).
+  viewerUserId   String?
+  /// Partner the viewer acted for, when partner staff.
+  viewerTenantId String?
+  /// PUBLIC | VERIFIER | FULL: what the viewer was shown.
+  view           String           @default("PUBLIC")
+  scannedAt      DateTime         @default(now())
+  card           VerificationCard @relation(fields: [cardId, tenantId, clientId], references: [id, tenantId, clientId], onDelete: Cascade, map: "CardScan_card_owner_fkey")
 
   @@index([cardId, scannedAt])
+  @@index([tenantId, scannedAt])
+  @@index([viewerUserId, scannedAt])
+}
+
+/// A vendor running ground checks (field address and police verification).
+model Vendor {
+  id        String             @id
+  slug      String             @unique
+  name      String
+  /// ACTIVE | DISABLED
+  status    String             @default("ACTIVE")
+  contacts  Json?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  bindings  StaffRoleBinding[]
+
+  @@index([status])
+}
+
+/// The only source of admin access: a system role granted at one scope.
+/// GLOBAL (Keystone), PARTNER (one tenant) or VENDOR (one vendor). See ADMIN-ACCESS.md.
+model StaffRoleBinding {
+  id          String     @id
+  userId      String
+  roleKey     String
+  /// GLOBAL | PARTNER | VENDOR
+  scopeType   String
+  /// "GLOBAL", "partner:<tenantId>" or "vendor:<vendorId>"; keeps bindings unique.
+  scopeKey    String
+  tenantId    String?
+  vendorId    String?
+  grantedById String?
+  createdAt   DateTime   @default(now())
+  user        PortalUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant      Tenant?    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  vendor      Vendor?    @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleKey, scopeKey])
+  @@index([tenantId, roleKey])
+  @@index([vendorId, roleKey])
+  @@index([userId])
+}
+
+/// One emailed sign-in code. Only an HMAC of the code is stored.
+model StaffOtp {
+  id         String    @id
+  email      String
+  codeHash   String
+  attempts   Int       @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  ipHash     String?
+  createdAt  DateTime  @default(now())
+
+  @@index([email, createdAt])
+  @@index([expiresAt])
+}
+
+/// A signed-in admin panel session. The cookie holds a random token; only its hash is kept.
+model StaffSession {
+  id             String     @id
+  userId         String
+  tokenHash      String     @unique
+  /// Must equal the account's sessionVersion; bumping that revokes the session.
+  sessionVersion Int
+  /// otp | passkey
+  authMethod     String
+  ipHash         String?
+  userAgent      String?
+  createdAt      DateTime   @default(now())
+  lastSeenAt     DateTime   @default(now())
+  expiresAt      DateTime
+  revokedAt      DateTime?
+  user           PortalUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+}
+
+/// A staff account's WebAuthn passkey. Only the public key is kept.
+model StaffPasskey {
+  id           String     @id
+  userId       String
+  rpId         String
+  credentialId String     @unique
+  publicKey    Bytes
+  counter      BigInt     @default(0)
+  transports   Json?
+  deviceType   String?
+  backedUp     Boolean    @default(false)
+  name         String     @default("Passkey")
+  createdAt    DateTime   @default(now())
+  lastUsedAt   DateTime?
+  user         PortalUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Single-use WebAuthn challenge for staff sign-in or passkey setup.
+model StaffAuthChallenge {
+  id        String   @id
+  /// authenticate | register
+  purpose   String
+  userId    String?
+  rpId      String
+  origin    String
+  challenge String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+/// Card-lookup access Keystone grants to a verifier account. SCOPED: cards the verifier
+/// scans plus a granted set; UNIVERSAL: any card. Lookups only by QR token or card number.
+model VerifierAccess {
+  id           String              @id
+  userId       String              @unique
+  /// SCOPED | UNIVERSAL
+  level        String
+  organisation String?
+  purpose      String?
+  expiresAt    DateTime?
+  revokedAt    DateTime?
+  revokedById  String?
+  grantedById  String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  user         PortalUser          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cards        VerifierCardGrant[]
+}
+
+/// A card a SCOPED verifier may look up by number: granted by Keystone or scanned by them.
+model VerifierCardGrant {
+  id               String           @id
+  verifierAccessId String
+  cardId           String
+  /// GRANTED | SCANNED
+  source           String
+  grantedById      String?
+  createdAt        DateTime         @default(now())
+  access           VerifierAccess   @relation(fields: [verifierAccessId], references: [id], onDelete: Cascade)
+  card             VerificationCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@unique([verifierAccessId, cardId])
+  @@index([cardId])
+}
+
+/// Add-ons offered with a base package (by code, so every version of both).
+model PackageAddOn {
+  id              String   @id
+  basePackageCode String
+  addOnCode       String
+  displayOrder    Int      @default(0)
+  createdAt       DateTime @default(now())
+
+  @@unique([basePackageCode, addOnCode])
+}
+
+/// Bulk discount tier: a percentage off a line whose quantity falls in [minQty, maxQty].
+model DiscountRule {
+  id            String    @id
+  /// GLOBAL | PARTNER
+  scope         String
+  tenantId      String?
+  /// null = every package
+  packageCode   String?
+  minQty        Int
+  maxQty        Int?
+  /// 500 = 5%
+  percentOffBps Int
+  validFrom     DateTime?
+  validTo       DateTime?
+  isActive      Boolean   @default(true)
+  createdById   String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  tenant        Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([scope, isActive])
+  @@index([tenantId, isActive])
+}
+
+/// A negotiated price for one partner. Replaces the list price before discount tiers.
+model PartnerPrice {
+  id             String    @id
+  tenantId       String
+  packageCode    String
+  unitPricePaise Int
+  validFrom      DateTime?
+  validTo        DateTime?
+  isActive       Boolean   @default(true)
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, packageCode, isActive])
+}
+
+/// A priced, read-only snapshot. Checkout always goes through one.
+model Quote {
+  id            String   @id
+  /// PARTNER | INDIVIDUAL
+  buyerType     String
+  tenantId      String
+  clientId      String?
+  applicationId String?
+  /// The priced lines and every input used (versions, rules, prices).
+  lines         Json
+  subtotalPaise Int
+  discountPaise Int
+  taxablePaise  Int
+  cgstPaise     Int
+  sgstPaise     Int
+  igstPaise     Int
+  totalPaise    Int
+  expiresAt     DateTime
+  createdById   String?
+  createdAt     DateTime @default(now())
+  order         Order?
+
+  @@index([tenantId, createdAt])
+}
+
+/// id is the 10-character order code, also Cashfree's order_id.
+model Order {
+  id               String      @id
+  quoteId          String      @unique
+  buyerType        String
+  tenantId         String
+  clientId         String?
+  applicationId    String?
+  createdById      String?
+  /// PENDING_PAYMENT | PAID | FAILED | EXPIRED | REFUNDED | PARTIALLY_REFUNDED
+  status           String      @default("PENDING_PAYMENT")
+  currency         String      @default("INR")
+  subtotalPaise    Int
+  discountPaise    Int
+  taxablePaise     Int
+  cgstPaise        Int
+  sgstPaise        Int
+  igstPaise        Int
+  totalPaise       Int
+  refundedPaise    Int         @default(0)
+  idempotencyKey   String
+  cfOrderId        String?
+  paymentSessionId String?
+  expiresAt        DateTime
+  paidAt           DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  tenant           Tenant      @relation(fields: [tenantId], references: [id])
+  quote            Quote       @relation(fields: [quoteId], references: [id])
+  lines            OrderLine[]
+  payments         Payment[]
+  refunds          Refund[]
+  invoice          Invoice?
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, createdAt])
+  @@index([status, expiresAt])
+}
+
+model OrderLine {
+  id             String              @id
+  orderId        String
+  tenantId       String
+  packageId      String
+  packageCode    String
+  packageVersion Int
+  quantity       Int
+  unitListPaise  Int
+  unitPricePaise Int
+  /// [{ checkType, checkRateId, unitPricePaise }]
+  addOns         Json
+  discountRuleId String?
+  discountBps    Int                 @default(0)
+  discountPaise  Int                 @default(0)
+  /// Package sale after discount, and add-on check sale: the two kinds of revenue.
+  packagePaise   Int                 @default(0)
+  addOnPaise     Int                 @default(0)
+  lineTotalPaise Int
+  order          Order               @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  package        VerificationPackage @relation(fields: [packageId], references: [id])
+
+  @@index([orderId])
+  @@index([tenantId, packageCode])
+}
+
+model Payment {
+  id          String   @id
+  orderId     String
+  tenantId    String
+  /// CASHFREE
+  provider    String
+  cfPaymentId String?
+  status      String
+  amountPaise Int
+  method      String?
+  receivedAt  DateTime @default(now())
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, cfPaymentId])
+  @@index([orderId])
+}
+
+/// Every webhook received. Duplicates are dropped by (provider, idempotencyKey).
+model PaymentWebhookEvent {
+  id             String    @id
+  provider       String
+  idempotencyKey String
+  type           String
+  orderId        String?
+  signatureValid Boolean
+  receivedAt     DateTime  @default(now())
+  processedAt    DateTime?
+
+  @@unique([provider, idempotencyKey])
+  @@index([orderId])
+}
+
+model Refund {
+  /// The order code plus R1, R2, ... (also Cashfree's refund_id).
+  id          String   @id
+  orderId     String
+  tenantId    String
+  amountPaise Int
+  /// PENDING | SUCCESS | FAILED | CANCELLED
+  status      String
+  reason      String
+  cfRefundId  String?
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+}
+
+model Invoice {
+  id           String          @id
+  /// LBV/2026-27/00001
+  number       String          @unique
+  /// Exactly one of orderId (a Cashfree order) or statementId (a monthly usage statement).
+  orderId      String?         @unique
+  statementId  String?         @unique
+  tenantId     String
+  buyerName    String
+  buyerGstin   String?
+  buyerState   String?
+  /// Keystone's registration as it stood when the invoice was issued.
+  sellerName   String          @default("Keystone Commerce Private Limited")
+  sellerGstin  String          @default("29AAMCK2232K1Z9")
+  sellerState  String
+  sacCode      String
+  taxablePaise Int
+  cgstPaise    Int
+  sgstPaise    Int
+  igstPaise    Int
+  totalPaise   Int
+  storageKey   String?
+  issuedAt     DateTime        @default(now())
+  order        Order?          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  statement    UsageStatement? @relation(fields: [statementId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, issuedAt])
+}
+
+model InvoiceCounter {
+  /// e.g. 2026-27
+  financialYear String @id
+  next          Int    @default(1)
+}
+
+/// Append-only seat ledger. Available = sum(delta) of PURCHASE, RESERVE, RELEASE, CONSUME, ADJUST rows.
+/// RESERVE is negative; CONSUME of a reserved seat is 0 (it only moves the seat); RELEASE is positive.
+model SeatLedger {
+  id             String   @id
+  tenantId       String
+  packageCode    String
+  packageVersion Int
+  delta          Int
+  /// PURCHASE | RESERVE | RELEASE | CONSUME | ADJUST
+  kind           String
+  orderLineId    String?
+  inviteId       String?
+  reason         String?
+  createdById    String?
+  createdAt      DateTime @default(now())
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, packageCode])
+  @@index([inviteId])
+}
+
+model BulkUpload {
+  id            String    @id
+  tenantId      String
+  clientId      String
+  packageCode   String
+  fileName      String
+  rowCount      Int
+  readyCount    Int
+  rejectedCount Int
+  /// [{ row, name, phone, status, reason? }] after validation
+  rows          Json
+  /// VALIDATED | SENT
+  status        String    @default("VALIDATED")
+  createdById   String?
+  createdAt     DateTime  @default(now())
+  sentAt        DateTime?
+  tenant        Tenant    @relation(fields: [tenantId], references: [id])
+  invites       Invite[]
+
+  @@index([tenantId, createdAt])
+}
+
+/// A link sent to one person. It opens only for the uploaded phone.
+model Invite {
+  id             String      @id
+  tenantId       String
+  clientId       String
+  uploadId       String?
+  packageCode    String
+  packageVersion Int
+  name           String
+  /// 91XXXXXXXXXX
+  phone          String
+  tokenHash      String      @unique
+  /// SENT | STARTED | COMPLETED | EXPIRED | CANCELLED
+  status         String      @default("SENT")
+  expiresAt      DateTime
+  /// WHATSAPP | SMS
+  channel        String?
+  messageId      String?
+  deliveryStatus String?
+  applicationId  String?
+  createdById    String?
+  startedAt      DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  tenant         Tenant      @relation(fields: [tenantId], references: [id])
+  upload         BulkUpload? @relation(fields: [uploadId], references: [id])
+
+  @@index([tenantId, phone, status])
+  @@index([status, expiresAt])
+}
+
+/// The price of one check run. tenantId null is the list price; a partner's row replaces it.
+/// Used for add-on checks an individual buys and for partners' API usage.
+model CheckRate {
+  id             String    @id
+  tenantId       String?
+  checkType      String
+  unitPricePaise Int
+  validFrom      DateTime?
+  validTo        DateTime?
+  isActive       Boolean   @default(true)
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  tenant         Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([checkType, isActive])
+  @@index([tenantId, checkType])
+}
+
+/// The checks already paid for on a case: its package (an individual's order or a company seat)
+/// and any add-ons. Checks listed here are never billed as API usage.
+model PrepaidCase {
+  applicationId  String   @id
+  tenantId       String
+  /// ORDER | SEAT
+  source         String
+  orderId        String?
+  inviteId       String?
+  packageCode    String
+  packageVersion Int
+  /// ["PAN", "DRIVING_LICENSE", ...]
+  coveredChecks  Json
+  createdAt      DateTime @default(now())
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+}
+
+/// One billed check run through a partner's API. verificationId is unique: never billed twice.
+model UsageCharge {
+  id             String          @id
+  verificationId String          @unique
+  tenantId       String
+  clientId       String
+  applicationId  String
+  checkType      String
+  checkRateId    String
+  unitPricePaise Int
+  occurredAt     DateTime
+  statementId    String?
+  createdAt      DateTime        @default(now())
+  tenant         Tenant          @relation(fields: [tenantId], references: [id])
+  statement      UsageStatement? @relation(fields: [statementId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, occurredAt])
+  @@index([statementId])
+  @@index([occurredAt])
+}
+
+/// A partner's monthly API usage bill. Issuing it issues the invoice.
+model UsageStatement {
+  id               String        @id
+  tenantId         String
+  /// 2026-10
+  period           String
+  /// ISSUED | PAID | VOID
+  status           String        @default("ISSUED")
+  /// [{ checkType, count, unitPricePaise, amountPaise }]
+  lines            Json
+  checkCount       Int
+  taxablePaise     Int
+  cgstPaise        Int
+  sgstPaise        Int
+  igstPaise        Int
+  totalPaise       Int
+  issuedAt         DateTime      @default(now())
+  dueAt            DateTime
+  paidAt           DateTime?
+  paymentReference String?
+  createdById      String?
+  tenant           Tenant        @relation(fields: [tenantId], references: [id])
+  charges          UsageCharge[]
+  invoice          Invoice?
+
+  @@unique([tenantId, period])
+  @@index([status, dueAt])
 }
