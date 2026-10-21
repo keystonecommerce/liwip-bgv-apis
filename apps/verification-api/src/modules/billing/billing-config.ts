@@ -26,7 +26,8 @@ export const billingConfig = () => ({
 });
 
 /** Billing calendars run on India time, whatever the server's timezone. */
-const IST_MS = 330 * 60_000;
+/** India time is UTC+5:30. */
+export const IST_MS = 330 * 60_000;
 const inIndia = (date: Date) => new Date(date.getTime() + IST_MS);
 
 /** Financial year label for invoice numbers: April to March in India time, e.g. 2026-27. */

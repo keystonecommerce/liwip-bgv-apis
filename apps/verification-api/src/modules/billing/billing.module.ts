@@ -1,7 +1,11 @@
 import { BundleRequestsController } from "./bundle-requests.controller";
 import { BundleRequestsService } from "./bundle-requests.service";
 import { Module } from "@nestjs/common";
-import { BillingAdminController, BillingPartnerController, BillingPublicController, WorkerBillingController, WorkerInvitesController } from "./billing.controller";
+import { BillingAdminController } from "./billing-admin.controller";
+import { BillingPartnerController } from "./billing-partner.controller";
+import { BillingPublicController } from "./billing-public.controller";
+import { WorkerBillingController } from "./worker-billing.controller";
+import { WorkerInvitesController } from "./worker-invites.controller";
 import { CashfreeGateway, PAYMENT_GATEWAY } from "./cashfree.client";
 import { CatalogService } from "./catalog.service";
 import { CheckRatesService } from "./check-rates.service";
