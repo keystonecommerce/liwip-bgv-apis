@@ -36,7 +36,10 @@ export class StaffOtpService {
       this.prisma.staffOtp.count({ where: { email, createdAt: { gte: new Date(now - 60_000) } } }),
       this.prisma.staffOtp.count({ where: { email, createdAt: { gte: new Date(now - 3_600_000) } } })
     ]);
-    if (lastMinute >= SENDS_PER_MINUTE || lastHour >= SENDS_PER_HOUR) {
+    if (lastHour >= SENDS_PER_HOUR) {
+      throw new HttpException("Too many codes requested for this email. Try again in an hour.", HttpStatus.TOO_MANY_REQUESTS);
+    }
+    if (lastMinute >= SENDS_PER_MINUTE) {
       throw new HttpException("Too many codes requested. Wait a minute and try again.", HttpStatus.TOO_MANY_REQUESTS);
     }
     const user = await this.prisma.portalUser.findUnique({ where: { email }, select: { id: true, status: true } });
