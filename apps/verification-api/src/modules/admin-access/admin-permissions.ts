@@ -39,20 +39,22 @@ export const PERMISSIONS = [
   permission("revenue.read", "View revenue", "View package and check sales, refunds and outstanding statements.", "GLOBAL", true),
   permission("statements.manage", "Manage statements", "Issue partners' monthly API usage statements and record their payment.", "GLOBAL"),
   permission("orders.refund", "Refund orders", "Refund paid orders.", "GLOBAL"),
+  permission("support.manage", "Support tools", "Reopen a person's checks, give them a fresh start, and (test environments) purge person data.", "GLOBAL"),
   permission("seats.adjust", "Adjust seats", "Add or remove a partner's seats by hand, with a reason.", "GLOBAL"),
   // Partner (PARTNER)
   permission("organisation.read", "View company profile", "View the partner's company profile and programs.", "PARTNER", true),
-  permission("cases.read", "View cases", "View workers' cases, checks, card and activity.", "PARTNER", true),
+  permission("cases.read", "View cases", "View cases, their checks, card and activity.", "PARTNER", true),
   permission("cases.documents.read", "View documents", "Open documents attached to cases.", "PARTNER", true),
   permission("cases.decide", "Decide checks", "Clear or fail checks that are in review.", "PARTNER"),
-  permission("workers.offboard", "Record worker exits", "End a worker's relationship with the partner.", "PARTNER"),
-  permission("cards.read", "View worker cards", "See the full case behind a scanned card of the partner's own worker.", "PARTNER", true),
+  permission("workers.offboard", "Record exits", "End a person's relationship with the partner; the partner keeps history only.", "PARTNER"),
+  permission("cards.read", "View cards", "See the full case behind a scanned card of the partner's own people.", "PARTNER", true),
   permission("users.read", "View team", "View the partner's staff accounts.", "PARTNER", true),
   permission("users.manage", "Manage team", "Invite and remove the partner's staff.", "PARTNER"),
   permission("audit.read", "View activity log", "View the partner's audit trail.", "PARTNER", true),
   permission("billing.buy", "Buy verifications", "See prices, get quotes and pay for verification seats.", "PARTNER"),
   permission("orders.read", "View orders", "View orders, payments and invoices.", "PARTNER", true),
   permission("people.invite", "Add people", "Upload people and send verification links, using seats.", "PARTNER"),
+  permission("apikeys.manage", "Manage API keys", "Create, rotate and revoke API keys for the partner's programs. A new key is shown once.", "PARTNER"),
   // Vendor (VENDOR)
   permission("field.tasks.read", "View field tasks", "View field verification tasks.", "VENDOR", true),
   permission("field.tasks.manage", "Assign field tasks", "Assign and reassign field tasks to agents.", "VENDOR"),
@@ -84,7 +86,7 @@ export const SYSTEM_ROLES = [
   {
     key: "KEYSTONE_OPS_REVIEWER", name: "Keystone ops reviewer", scope: "GLOBAL",
     description: "Reviews cases for every partner and decides checks in review.",
-    permissions: ["partners.read", "vendors.read", "organisation.read", "cases.read", "cases.documents.read", "cases.decide", "cards.read", "audit.read", "field.tasks.read", "field.tasks.manage"]
+    permissions: ["partners.read", "vendors.read", "organisation.read", "cases.read", "cases.documents.read", "cases.decide", "cards.read", "audit.read", "field.tasks.read", "field.tasks.manage", "support.manage"]
   },
   {
     key: "KEYSTONE_FINANCE", name: "Keystone finance", scope: "GLOBAL",
@@ -98,8 +100,8 @@ export const SYSTEM_ROLES = [
   },
   {
     key: "PARTNER_ADMIN", name: "Partner admin", scope: "PARTNER",
-    description: "Manages the partner's team and sees every case of its workers.",
-    permissions: ["organisation.read", "cases.read", "cases.documents.read", "workers.offboard", "cards.read", "users.read", "users.manage", "audit.read", "billing.buy", "orders.read", "people.invite"]
+    description: "Manages the partner's team, billing and API keys, and sees every case.",
+    permissions: ["organisation.read", "cases.read", "cases.documents.read", "workers.offboard", "cards.read", "users.read", "users.manage", "audit.read", "billing.buy", "orders.read", "people.invite", "apikeys.manage"]
   },
   {
     key: "PARTNER_OPERATOR", name: "Partner operator", scope: "PARTNER",
@@ -110,6 +112,11 @@ export const SYSTEM_ROLES = [
     key: "PARTNER_VIEWER", name: "Partner viewer", scope: "PARTNER",
     description: "Views case status without documents.",
     permissions: ["organisation.read", "cases.read", "cards.read"]
+  },
+  {
+    key: "PARTNER_FINANCE", name: "Partner finance", scope: "PARTNER",
+    description: "Buys seats and sees orders, statements and invoices. No verification details.",
+    permissions: ["organisation.read", "billing.buy", "orders.read"]
   },
   {
     key: "VENDOR_ADMIN", name: "Vendor admin", scope: "VENDOR",
