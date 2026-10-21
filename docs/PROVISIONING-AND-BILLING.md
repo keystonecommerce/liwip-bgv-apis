@@ -2,11 +2,11 @@
 
 ## Provisioning
 
-HTTP administration and CLI commands share `PartnerProvisioning`. Each issuance, rotation and revocation commits with its audit row in one PostgreSQL transaction. Keys use 32 cryptographically random bytes; only SHA-256 digests and short prefixes are stored. Raw keys are returned once. Lists never return digests or raw credentials.
+The admin apps (`/v1/admin/api-keys`, AUTH.md "API keys") and the CLI commands share `PartnerProvisioning`. Each issuance, rotation and revocation commits with its audit row in one PostgreSQL transaction. Keys use 32 cryptographically random bytes; only SHA-256 digests and short prefixes are stored. Raw keys are returned once. Lists never return digests or raw credentials.
 
 Omitted scopes grant only `packages:read`. Empty, malformed and unknown scope lists fail closed. Optional expiry is an integer from 1 to 3650 days. Rotation copies the existing scopes and expiry; an atomic active/unexpired predicate ensures concurrent rotations produce one replacement. Revoked or expired keys cannot be rotated. Revocation is idempotent. Provisioning never silently reactivates an existing disabled tenant or client.
 
-`X-Admin-Key` protects `/admin`. Keep the key in the deployment secret manager. Production responses use `Cache-Control: no-store`; operator API keys are never browser configuration. Partner authentication verifies the current database state on every request, so revocations take effect without cache delay. A shared Redis quota uses authenticated `clientId` across keys and API replicas. Pre-auth throttling uses Express's trusted client IP, not a caller-supplied forwarding header or invented key.
+Key management needs a staff session with `apikeys.manage` and a recent sign-in. Production responses use `Cache-Control: no-store`; operator API keys are never browser configuration. Partner authentication verifies the current database state on every request, so revocations take effect without cache delay. A shared Redis quota uses authenticated `clientId` across keys and API replicas. Pre-auth throttling uses Express's trusted client IP, not a caller-supplied forwarding header or invented key.
 
 ## Accounting contract
 
@@ -32,7 +32,7 @@ No network integration can guarantee exactly-once execution across a crash after
 ## Reports
 
 - `GET /v1/usage?from=2026-09-01&to=2026-10-01` requires `usage:read`. Ownership comes from the authenticated key; query/body tenant IDs cannot broaden it.
-- `GET /admin/usage` provides the explicitly global operator report and optional tenant/client filters.
+- `GET /v1/admin/usage` (staff with `usage.read`) provides the global operator report, with optional partner and program filters.
 - Both return partner totals, confirmed calls by provider/endpoint/key, known rejections, reconciliation counts, and separately verified checkpoints.
 - Periods are UTC, `[from, to)` with an exclusive end, and cannot exceed 366 days. Default: trailing 30 days. Malformed or reversed periods return 400.
 - Reads share a repeatable-read database snapshot so aggregates cannot disagree during concurrent completions.

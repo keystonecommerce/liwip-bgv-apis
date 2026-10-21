@@ -23,7 +23,8 @@
     "smoke:s3-upload": "tsx smoke-tests/run-s3-upload-smoke.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:unit": "npm run build && node --test dist/tests/unit/*.test.js",
-    "test:e2e": "npm run build && node --test --test-concurrency=1 dist/tests/e2e/*.test.js"
+    "test:e2e": "npm run build && node --test --test-concurrency=1 dist/tests/e2e/*.test.js",
+    "docs:roles": "tsx scripts/roles-doc.ts"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1149.0",

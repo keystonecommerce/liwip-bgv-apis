@@ -1,7 +1,7 @@
 # Admin Access Layer (admin panel API)
 
-The Liwip BGV admin panel is a separate React + Vite SPA (e.g. `admin.liwip.com`) that calls
-this API (e.g. `api.liwip.com`) under `/v1/admin/*`. It is used by:
+The two Liwip BGV admin apps (`liwip-bgv-admin`: **Control** for Keystone, **Business** for
+everyone else) call this API under `/v1/admin/*`. They are used by:
 
 - **Keystone staff**: platform admins, ops reviewers, finance, read-only.
 - **Partner staff**: partner admins, operators and viewers (e.g. Zomato). They only ever see their own partner.
@@ -12,6 +12,10 @@ Code: `apps/verification-api/src/modules/admin-access` (permissions, the guard, 
 `modules/staff-auth` (email OTP, passkeys), `modules/admin-panel` (routes), `modules/cards`
 (card views, public verify). Migration: `prisma/migrations/20261021120000_admin_access_layer`.
 
+**Start with [AUTH.md](AUTH.md):** every way in, recent sign-in for powerful actions, API keys,
+and the roles and permissions tables generated from the code. This file holds the model and the
+full route list.
+
 ## Model
 
 | Concept | Table | Notes |
@@ -20,8 +24,8 @@ Code: `apps/verification-api/src/modules/admin-access` (permissions, the guard, 
 | Liwip Direct | `Tenant` (`kind = DIRECT`, slug `liwip-direct`) | Individuals without a corporate code. Program `INDIVIDUAL`. Seeded; cannot be disabled. |
 | Program | `Client` | e.g. *Zomato Delivery*. `corporateCode` is unique across all programs. |
 | Vendor | `Vendor` | Field verification agency. |
-| Staff account | `PortalUser` | Email + display name. **No password** (the column is kept only for the deprecated `/v1/portal-auth` field-app login). `sessionVersion` revokes all sessions. |
-| Role binding | `StaffRoleBinding` | **The only source of access.** `roleKey` + scope: `GLOBAL`, `PARTNER` (`tenantId`) or `VENDOR` (`vendorId`). A DB check constraint keeps the scope columns consistent. The legacy `PortalUser.role` column is never read. |
+| Staff account | `PortalUser` | Email + display name. No password. `sessionVersion` revokes all sessions. |
+| Role binding | `StaffRoleBinding` | **The only source of access.** `roleKey` + scope: `GLOBAL`, `PARTNER` (`tenantId`) or `VENDOR` (`vendorId`). A DB check constraint keeps the scope columns consistent. |
 | Session | `StaffSession` | Random token in a cookie, SHA-256 stored. Valid while unexpired, not revoked and `sessionVersion` matches the account. |
 | Sign-in code | `StaffOtp` | HMAC of the code only. 10 min expiry, 5 attempts, newest code wins, 2 sends/min and 10/hour per address. |
 | Passkey | `StaffPasskey`, `StaffAuthChallenge` | WebAuthn, single-use server-side challenges. |
@@ -226,6 +230,12 @@ must send it; partner staff are resolved from their binding.
 | POST | `/passkeys/register/options` | signed in | `{ code? }` (email code when signed in > 10 min ago) |
 | POST | `/passkeys/register/verify` | signed in | `{ challengeId, response, name? }` |
 | DELETE | `/passkeys/:id` | signed in | |
+| POST | `/confirm/otp/send` · `/confirm/otp/verify` | signed in | confirm it's you before a powerful action: a code to your own email, then `{ code }` → `{ confirmed, recentSignInUntil }` |
+| POST | `/confirm/passkey/options` · `/confirm/passkey/verify` | signed in | the same with a passkey; it must be this account's |
+
+Routes marked **recent sign-in** in AUTH.md answer `403 { code: "RECENT_SIGN_IN_REQUIRED" }` when
+the last sign-in or confirmation is older than `ADMIN_RECENT_SIGN_IN_MINUTES` (15). `/session`
+returns `recentSignInUntil`.
 
 ### Keystone: partners, programs, vendors, staff, verifiers, usage
 
@@ -259,7 +269,10 @@ must send it; partner staff are resolved from their binding.
 | DELETE | `/v1/admin/verifiers/:userId/cards/:cardId` | `verifiers.manage` | |
 | POST | `/v1/admin/verifiers/:userId/revoke` | `verifiers.manage` | |
 | GET | `/v1/admin/verifiers/:userId/lookups` | `verifiers.manage` | the verifier's lookups (card, via, view, time) |
-| GET | `/v1/admin/usage` | `usage.read` | `?from=YYYY-MM-DD&to=YYYY-MM-DD&partnerId=&programId=` (same report as `/admin/usage`) |
+| GET | `/v1/admin/usage` | `usage.read` | `?from=YYYY-MM-DD&to=YYYY-MM-DD&partnerId=&programId=` |
+| POST | `/v1/admin/support/cases/:caseId/reopen` | `support.manage` | `{ types: [] }` (not AADHAAR); recent sign-in |
+| POST | `/v1/admin/support/people/reset` | `support.manage` | `{ phone, programId? }` archives their cases, removes passkeys; recent sign-in |
+| POST | `/v1/admin/support/purge` | `support.manage` | `{ confirm: "DELETE ALL WORKER DATA" }`, only with `ADMIN_PURGE_ENABLED=true`; recent sign-in |
 
 ### Partner (and Keystone with x-partner-id)
 
@@ -283,6 +296,15 @@ Check states (`state`): `WAITING` (PENDING), `IN_PROGRESS` (QUEUED/PROCESSING), 
 review), `expired`, `suspended`. Check categories: IDENTITY, FACE, DRIVING, VEHICLE, ADDRESS,
 COURT_RECORDS, EMPLOYMENT, EDUCATION, REFERENCES, SKILLS, FINANCIAL, OTHER.
 
+### API keys (Keystone for any partner; partner admins for their own)
+
+| Method | Path | Permission | Body / notes |
+|---|---|---|---|
+| GET | `/v1/admin/api-keys` | `apikeys.manage` (all partners allowed) | `?programId=`; items `{ id, name, keyPrefix, scopes, state: ACTIVE\|EXPIRED\|REVOKED, lastUsedAt, program, partner }`, never the key |
+| GET | `/v1/admin/api-keys/scopes` | `apikeys.manage` | the scopes this caller may grant, with labels (`worker:cases` for Keystone only) |
+| POST | `/v1/admin/api-keys` | `apikeys.manage` | `{ programId, name?, scopes: [], expiresInDays? }` → `{ apiKey, rawKey }` (shown once); recent sign-in |
+| POST | `/v1/admin/api-keys/:keyId/rotate` · `/revoke` | `apikeys.manage` | rotate returns the new `rawKey` once; recent sign-in |
+
 ### Packages, pricing, orders, seats and invites
 
 See [PRICING-AND-PAYMENTS.md §6](PRICING-AND-PAYMENTS.md#6-routes).
@@ -294,6 +316,11 @@ See [PRICING-AND-PAYMENTS.md §6](PRICING-AND-PAYMENTS.md#6-routes).
 | GET | `/v1/admin/vendor-users` | `vendor.users.manage` | the vendor's team |
 | POST | `/v1/admin/vendor-users` | `vendor.users.manage` | `{ email, displayName, roleKey: VENDOR_ADMIN\|FIELD_AGENT }` |
 | DELETE | `/v1/admin/vendor-users/:userId` | `vendor.users.manage` | |
+| GET | `/v1/admin/field-tasks` | `field.tasks.read` (all vendors allowed) | `?status=&unassigned=true`; Keystone sees every task, a vendor admin their vendor's |
+| POST | `/v1/admin/field-tasks/:id/vendor` | `field.tasks.manage` | Keystone only: `{ vendorId \| null }` while no agent has accepted it |
+| GET | `/v1/admin/field-tasks/mine` | `field.tasks.perform` | the agent's tasks and their vendor's open pool: `{ open, available, submitted }` |
+| GET | `/v1/admin/field-tasks/:id` | `field.tasks.perform` | one task the agent may see |
+| POST | `/v1/admin/field-tasks/:id/accept` · `/reject` · `/arrive` · `/submit` | `field.tasks.perform` | `reject { reason }`, `arrive { latitude?, longitude? }`, `submit { outcome, notes? }` |
 
 ### Cards
 
@@ -309,13 +336,10 @@ permission, wrong partner, inactive partner/vendor, CSRF or origin; `404` not fo
 another partner's ids); `409` duplicates or already ended; `429` rate limits; `503` admin
 sign-in or email not configured.
 
-## Deprecated
+## Removed
 
-- `X-Admin-Key` routes under `/admin/*` keep working; responses carry `Deprecation: true`.
-  Move scripts to `/v1/admin/*` as the panel covers them.
-- `/v1/portal-auth` password login (field app) keeps working for accounts that still have a
-  password and legacy role. Field tasks still use it; the `field.tasks.*` permissions and vendor
-  roles are in place for moving the field app to staff sessions.
-- The migration gives existing portal accounts equivalent bindings: `CORPORATE_ADMIN` →
-  `PARTNER_ADMIN`, `CORPORATE_OPERATOR` → `PARTNER_OPERATOR`, `LIWIP_SUPPORT` →
-  `KEYSTONE_READ_ONLY`. `FIELD_AGENT` accounts get none until bound to a vendor.
+The shared `X-Admin-Key` (`/admin/*`) and the `/v1/portal-auth` password login were removed in
+October 2026; see AUTH.md, "Removed in October 2026". Existing portal accounts kept the role
+bindings this layer's migration gave them (`CORPORATE_ADMIN` → `PARTNER_ADMIN`,
+`CORPORATE_OPERATOR` → `PARTNER_OPERATOR`, `LIWIP_SUPPORT` → `KEYSTONE_READ_ONLY`). Former field
+agents need a `FIELD_AGENT` role at a vendor.

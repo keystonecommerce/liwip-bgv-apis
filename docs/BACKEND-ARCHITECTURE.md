@@ -47,7 +47,8 @@ Staff (Keystone, partner staff, vendors, verifiers) use the admin panel API unde
 with httpOnly cookie sessions (email OTP or passkeys), CSRF tokens and role bindings resolved
 by one guard (`AdminAccessGuard`). Partner staff read through the scoped Prisma client only.
 See [ADMIN-ACCESS.md](ADMIN-ACCESS.md) for the model, roles, permissions, cookie/CSRF setup
-and the route list. The `X-Admin-Key` `/admin/*` routes are deprecated but still work.
+and the route list, and [AUTH.md](AUTH.md) for every way in, recent sign-in, API keys and the
+generated roles and permissions tables. The old `X-Admin-Key` routes and password login are gone.
 
 ## Tenant isolation rules
 
