@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { ON_FAIL } from "../../domain/final-result";
 import { BGV_MODULES, moduleOf } from "../../domain/modules";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
@@ -93,7 +94,9 @@ function checksOf(value: unknown): Prisma.InputJsonValue {
     seen.add(type);
     const mode = oneOf((item as { mode?: unknown }).mode ?? "REQUIRED", "mode", ["REQUIRED", "OPTIONAL"] as const);
     const execution = oneOf((item as { execution?: unknown }).execution ?? "PROVIDER", "execution", ["PROVIDER", "MANUAL"] as const);
-    return { type, mode, execution };
+    // What a failure of this check does to the case's final result (domain/final-result.ts).
+    const onFail = (item as { onFail?: unknown }).onFail === undefined ? undefined : oneOf((item as { onFail?: unknown }).onFail, "onFail", ON_FAIL);
+    return { type, mode, execution, ...(onFail ? { onFail } : {}) };
   });
 }
 

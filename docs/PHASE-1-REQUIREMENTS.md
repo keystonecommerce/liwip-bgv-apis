@@ -105,13 +105,13 @@ Users can type their details, photograph documents or upload files, and the syst
   - Corporates can download cases as Excel.
   - Corporates receive signed webhooks on status changes.
   - Corporates have a dashboard with counts, turnaround time and pending items.
-- **Today (Missing):** per-case JSON over the API, usage counts and the worker card. There is no final result rule, report, export, webhook or dashboard.
+- **Today (Partial):**
+  - Each case gets a final result (Pass, Fail or Review) from its package's rule: every check says what its failure means (`onFail`).
+  - A JSON report per case, for the API key and the admin apps.
+  - Signed webhooks (`case.status_changed`, `case.completed`) with retries, managed in the admin apps. See [REPORTS-AND-WEBHOOKS.md](REPORTS-AND-WEBHOOKS.md).
 - **To build:**
-  - A final-result rule per package.
-  - PDF and JSON report.
-  - Excel export.
-  - Webhook endpoints with signing and retries.
-  - A dashboard in the corporate portal.
+  - PDF report and Excel export (wait on decision D6).
+  - A dashboard in the corporate portal, and the webhook and report screens.
 
 ### R7. Keystone assigns tasks to third-party vendors or its own team
 

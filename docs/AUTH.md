@@ -48,6 +48,7 @@ Sessions last 12 hours and nobody is logged out early. Instead, a short list of 
 - **Partners and vendors:** disabling or enabling a partner, program or vendor; adding a partner's or vendor's admin.
 - **Money and prices:** publishing or retiring a package; any check price, bulk discount or partner price change; refunds; seat adjustments; marking a usage statement paid.
 - **API keys:** creating, rotating or revoking one.
+- **Webhooks:** creating an endpoint or rotating its secret.
 - **Support tools:** reopening checks, resetting a person, purging test data.
 
 ## Roles and permissions
@@ -117,6 +118,7 @@ The tables below are generated from `apps/verification-api/src/modules/admin-acc
 | `orders.read` | View orders, payments and invoices. | ✓ |  | ✓ | ✓ | ✓ |  |  | ✓ |
 | `people.invite` | Upload people and send verification links, using seats. | ✓ |  |  |  | ✓ | ✓ |  |  |
 | `apikeys.manage` | Create, rotate and revoke API keys for the partner's programs. A new key is shown once. | ✓ |  |  |  | ✓ |  |  |  |
+| `webhooks.manage` | Add, disable and test the endpoints that receive signed case events. A new secret is shown once. | ✓ |  |  |  | ✓ |  |  |  |
 
 ### Vendor permissions (one vendor, or every vendor for Keystone roles)
 

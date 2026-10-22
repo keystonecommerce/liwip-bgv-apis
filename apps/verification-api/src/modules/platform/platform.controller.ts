@@ -4,12 +4,16 @@ import { ClientContext, CurrentClient } from "../../common/auth/client-context";
 import { ScopeGuard } from "../../common/auth/scope.guard";
 import { RequireScopes } from "../../common/auth/scopes";
 import { ApplicationSchema } from "../../domain/verification.types";
+import { ReportService } from "../reports/report.service";
 import { VerificationService } from "../verifications/verification.service";
 
 @Controller("v1")
 @UseGuards(ApiKeyGuard, ScopeGuard)
 export class PlatformController {
-  constructor(@Inject(VerificationService) private readonly verificationService: VerificationService) {}
+  constructor(
+    @Inject(VerificationService) private readonly verificationService: VerificationService,
+    @Inject(ReportService) private readonly reports: ReportService
+  ) {}
 
   @Get("packages")
   @RequireScopes("packages:read")
@@ -31,6 +35,13 @@ export class PlatformController {
   @RequireScopes("applications:read")
   getApplication(@Param("id") id: string, @CurrentClient() client: ClientContext) {
     return this.verificationService.getApplicationDetails(id, { tenantId: client.tenantId, clientId: client.clientId, apiKeyId: client.apiKeyId });
+  }
+
+  /** The case report as JSON (PDF waits on decision D6). */
+  @Get("applications/:id/report")
+  @RequireScopes("applications:read")
+  getReport(@Param("id") id: string, @CurrentClient() client: ClientContext) {
+    return this.reports.forApiKey(id, { tenantId: client.tenantId, clientId: client.clientId, apiKeyId: client.apiKeyId });
   }
 
   @Post("verifications/:id/retry")

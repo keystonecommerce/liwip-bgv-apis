@@ -154,6 +154,9 @@ export interface ApplicationRecord {
   package?: Pick<VerificationPackageRecord, "id" | "code" | "version" | "name" | "kind" | "priceInr" | "advertisedCheckCount">;
   status: ApplicationStatus;
   recommendation: FinalRecommendation;
+  /** PASS, FAIL or REVIEW by the package's result rule once no check is waiting; null before. */
+  finalResult: "PASS" | "FAIL" | "REVIEW" | null;
+  finalResultAt: string | null;
   card?: VerificationCardRecord;
   data: ApplicationSchema;
   /** Opened by the worker themselves (worker app), not submitted by a partner. */

@@ -4,6 +4,7 @@ import { PrismaService } from "../../common/database/prisma.service";
 import { AdminContext, partnerDb } from "../admin-access/admin-context";
 import { hasPermission } from "../admin-access/admin-permissions";
 import { categoryOf, checkState, latestChecks, photoDataUrl, workerName } from "../cards/card-views";
+import { FINAL_RESULTS } from "../../domain/final-result";
 import { BGV_MODULES, VEHICLE_CHECK_TYPES, moduleOf, modulesOf, subjectOf } from "../../domain/modules";
 import { DocumentStorageService } from "../document-storage/document-storage.service";
 import { VerificationStore } from "../verifications/verification.repository";
@@ -12,7 +13,7 @@ import { Page, maskPhone, oneOf, optionalDate, optionalText, paginated, text } f
 const STATES = ["DRAFT", "PENDING_VERIFICATION", "VERIFICATION_IN_PROGRESS", "VERIFIED", "VERIFICATION_FAILED", "MANUAL_REVIEW"] as const;
 
 export interface CaseListQuery {
-  search?: string; state?: string; package?: string; checkType?: string; module?: string; programId?: string; relationship?: string; from?: string; to?: string;
+  search?: string; state?: string; result?: string; package?: string; checkType?: string; module?: string; programId?: string; relationship?: string; from?: string; to?: string;
 }
 
 const CASE_INCLUDE = {
@@ -68,6 +69,12 @@ function snapshotSubject(snapshot: RelationshipSnapshot) {
   return { person: modules.includes("PEOPLE"), vehicle: modules.includes("VEHICLE") ? (snapshot.vehicle ?? { registrationNumber: null }) : null };
 }
 
+/** The final result, or for a frozen view only one reached before the relationship ended. */
+function resultSeenBy(row: CaseRow, frozen: boolean): string | null {
+  if (!frozen) return row.finalResult;
+  return row.finalResult && row.finalResultAt && row.relationshipEndedAt && row.finalResultAt <= row.relationshipEndedAt ? row.finalResult : null;
+}
+
 function summarise(checks: Array<{ status: string }>) {
   const count = (state: string) => checks.filter((check) => checkState(check.status) === state).length;
   return { total: checks.length, clear: count("CLEAR"), needsReview: count("NEEDS_REVIEW"), discrepancy: count("DISCREPANCY"), inProgress: count("IN_PROGRESS"), waiting: count("WAITING") };
@@ -118,6 +125,7 @@ export class CasesService {
       const state = oneOf(query.state, "state", STATES);
       and.push(frozen ? { OR: [{ relationshipStatus: "ACTIVE", status: state }, { relationshipStatus: "ENDED", relationshipEndStatus: state }] } : { status: state });
     }
+    if (query.result) and.push({ finalResult: oneOf(query.result, "result", FINAL_RESULTS) });
     if (query.package) and.push({ package: { code: text(query.package, "package", 80).toUpperCase() } });
     if (query.checkType) {
       const type = text(query.checkType, "checkType", 40).toUpperCase();
@@ -175,6 +183,7 @@ export class CasesService {
       program: { id: row.client.id, name: row.client.name },
       worker: snapshot ? snapshot.worker : { name: workerName(row.data), phoneLast4: maskPhone(row.workerPhone) },
       status: snapshot ? snapshot.status : row.status,
+      finalResult: resultSeenBy(row, Boolean(snapshot)),
       package: snapshot ? snapshot.package : row.package,
       modules: modulesOf(checks.map((check) => check.type)),
       subject: snapshot ? snapshotSubject(snapshot) : subjectOf(checks.map((check) => check.type), row.data),
@@ -227,6 +236,8 @@ export class CasesService {
       partner: { id: row.tenant.id, name: row.tenant.name },
       program: row.client,
       status: snapshot ? snapshot.status : row.status,
+      finalResult: resultSeenBy(row, Boolean(snapshot)),
+      finalResultAt: resultSeenBy(row, Boolean(snapshot)) ? iso(row.finalResultAt) : null,
       package: snapshot ? snapshot.package : row.package,
       worker: snapshot
         ? { ...snapshot.worker, identityVerified: null }
