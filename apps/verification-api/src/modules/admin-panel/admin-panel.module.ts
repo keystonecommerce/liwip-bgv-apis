@@ -22,11 +22,12 @@ import { ReviewQueueController } from "./review-queue.controller";
 import { ReviewQueueService } from "./review-queue.service";
 import { StaffDirectoryService } from "./staff-directory.service";
 import { SupportController } from "./support.controller";
+import { ReportsModule } from "../reports/reports.module";
 import { SupportService } from "./support.service";
 
 /** The admin panel API (/v1/admin/*). Every controller is guarded by AdminAccessGuard. */
 @Module({
-  imports: [DocumentStorageModule, UsageModule, VerificationModule],
+  imports: [DocumentStorageModule, UsageModule, VerificationModule, ReportsModule],
   controllers: [
     PartnersController, VendorsController, StaffController, OrganisationController, PartnerUsersController, VendorUsersController,
     AdminAuditLogsController, AdminUsageController, CasesController, CardLookupController, VerifiersController,

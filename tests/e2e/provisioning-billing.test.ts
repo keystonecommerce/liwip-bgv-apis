@@ -20,6 +20,9 @@ import { provisionPlatformAdmin } from "../../apps/verification-api/src/modules/
 import { issueWorkerToken } from "../../apps/verification-api/src/common/auth/worker-token";
 import { DEFAULT_ENABLED_PRODUCTS } from "../../apps/verification-api/src/integrations/surepass/products";
 import { AadhaarMasker } from "../../apps/verification-api/src/modules/document-storage/aadhaar-masker";
+import { WebhookDispatcher } from "../../apps/verification-api/src/modules/webhooks/webhook-dispatcher.service";
+import { createServer, type IncomingHttpHeaders } from "node:http";
+import { createHmac } from "node:crypto";
 
 let app: INestApplication, db: PrismaClient;
 const { createSurepassMock } = require(resolve(process.cwd(), "tools/surepass-mock/server.cjs"));
@@ -105,6 +108,7 @@ before(async () => {
   process.env.THROTTLE_LIMIT = "10000"; process.env.PARTNER_RATE_LIMIT = "10000"; process.env.SUREPASS_BEARER_TOKEN = "test_only_fake_token";
   process.env.SUREPASS_TIMEOUT_MS = "1000";
   process.env.FIELD_EVIDENCE_LOCAL_DIR = mkdtempSync(join(tmpdir(), "field-evidence-"));
+  process.env.WEBHOOK_JOBS = "off"; process.env.WEBHOOK_INSECURE_HOSTS = "127.0.0.1"; process.env.WEBHOOK_SECRET_KEY = randomBytes(32).toString("base64");
   process.env.MOCK_NAME = "Test Worker"; // the name the mock returns for identity lookups
   execFileSync(process.execPath, ["node_modules/prisma/build/index.js", "migrate", "deploy"], { env: process.env, stdio: "pipe" });
   db = new PrismaClient();
@@ -632,6 +636,102 @@ test("modules: a case is for a person, a vehicle or both, shown by module and se
   const fleet = ok(await as(keystone, "post", "/v1/admin/packages").send({ code: `VEH_${tag}`, name: "Fleet vehicle", module: "VEHICLE", listPricePaise: 10_000, checks: [{ type: "RC_V2" }, { type: "VEHICLE_CHALLAN" }] }), 201).body;
   assert.equal(fleet.module, "VEHICLE");
   assert.equal((await as(keystone, "put", `/v1/admin/packages/${fleet.code}/draft`).send({ checks: [{ type: "PAN" }] })).status, 400);
+});
+test("final result, JSON report and signed webhooks: a partner hears about each change and reads the report", async () => {
+  // A receiver that records what it gets and answers with `reply`.
+  const received: Array<{ headers: IncomingHttpHeaders; body: string }> = [];
+  let reply = 200;
+  const receiver = createServer((req, res) => { let body = ""; req.on("data", (chunk) => (body += chunk)); req.on("end", () => { received.push({ headers: req.headers, body }); res.writeHead(reply); res.end(); }); });
+  await new Promise<void>((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+  const hookUrl = `http://127.0.0.1:${(receiver.address() as { port: number }).port}/liwip`;
+  const dispatcher = app.get(WebhookDispatcher);
+  const verify = (secret: string, entry: { headers: IncomingHttpHeaders; body: string }) => {
+    const [t, v1] = String(entry.headers["liwip-signature"]).split(",").map((part) => part.split("=")[1]);
+    return v1 === createHmac("sha256", secret).update(`${t}.${entry.body}`).digest("hex");
+  };
+  try {
+    // Keystone adds an endpoint for partner A's program; the secret is shown once.
+    assert.equal((await as(keystone, "post", "/v1/admin/webhooks").send({ url: "http://hooks.example.com/x", programId: partnerA.client.id })).status, 400);
+    assert.equal((await as(keystone, "post", "/v1/admin/webhooks").send({ url: hookUrl })).status, 400, "which partner");
+    const created = ok(await as(keystone, "post", "/v1/admin/webhooks").send({ url: hookUrl, programId: partnerA.client.id, description: "Ops" }), 201).body;
+    assert.match(created.secret, /^whsec_/);
+    const endpointId = created.endpoint.id;
+    const listed = ok(await as(keystone, "get", "/v1/admin/webhooks")).body.items.find((item: { id: string }) => item.id === endpointId);
+    assert.equal(listed.programId, partnerA.client.id); assert.equal(JSON.stringify(listed).includes("whsec_"), false);
+
+    // A package whose optional reference check may fail without failing the case.
+    const code = `TEST_RESULT_${tag}`.toUpperCase();
+    await db.verificationPackage.create({ data: { id: `pkg_result_${tag}`, code, version: 1, name: "Result rule", checks: [{ type: "CURRENT_ADDRESS", mode: "REQUIRED", execution: "MANUAL" }, { type: "REFERENCE_CHECK", mode: "OPTIONAL", execution: "MANUAL", onFail: "IGNORE" }] } });
+    const opened = await api().post("/v1/applications").set("x-api-key", partnerA.rawKey).send({ packageCode: code, personal: { panNumber: "ABCDE1234F", nameAsAadhaar: "Result Person", submittedAddress: "Test Address" }, references: [{ name: "Referee One", phone: "9876543210" }], consent: { granted: true } });
+    assert.equal(opened.status, 201, JSON.stringify(opened.body));
+    const created_case = opened.body as { id: string };
+    const checks = await eventually(() => db.verification.findMany({ where: { applicationId: created_case.id } }), (rows) => rows.length === 2 && rows.every((row) => row.status === "MANUAL_REVIEW"));
+    const caseRow = await db.application.findUniqueOrThrow({ where: { id: created_case.id } });
+    assert.equal(caseRow.finalResult, "REVIEW", "checks in review make the result Review");
+
+    assert.ok((await dispatcher.runOnce()) >= 1);
+    const firstEvents = received.map((entry) => JSON.parse(entry.body)).filter((event) => event.data.caseId === created_case.id);
+    assert.ok(firstEvents.some((event) => event.type === "case.status_changed" && event.data.status === "MANUAL_REVIEW"));
+    assert.ok(firstEvents.some((event) => event.type === "case.completed" && event.data.finalResult === "REVIEW"));
+    assert.ok(received.every((entry) => verify(created.secret, entry)), "every body is signed with the endpoint's secret");
+    assert.equal(received[0].headers["liwip-event"], JSON.parse(received[0].body).type);
+    assert.equal(JSON.stringify(firstEvents).includes("Result Person"), false, "events carry no personal data");
+
+    // Keystone clears the address and rejects the optional reference: the case passes.
+    const address = checks.find((row) => row.type === "CURRENT_ADDRESS")!, reference = checks.find((row) => row.type === "REFERENCE_CHECK")!;
+    ok(await as(keystone, "post", `/v1/admin/cases/${created_case.id}/checks/${address.id}/decision`).send({ decision: "VERIFIED" }));
+    ok(await as(keystone, "post", `/v1/admin/cases/${created_case.id}/checks/${reference.id}/decision`).send({ decision: "FAILED", note: "Referee did not answer" }));
+    const passed = await db.application.findUniqueOrThrow({ where: { id: created_case.id } });
+    assert.equal(passed.status, "VERIFICATION_FAILED", "the case status still shows the failed check");
+    assert.equal(passed.finalResult, "PASS", "but the package says that failure does not count"); assert.ok(passed.finalResultAt);
+    received.length = 0;
+    await dispatcher.runOnce();
+    const completed = received.map((entry) => JSON.parse(entry.body)).find((event) => event.type === "case.completed");
+    assert.equal(completed.data.finalResult, "PASS"); assert.equal(completed.data.caseId, created_case.id);
+
+    // The JSON report, through the partner's API key and the admin app.
+    const report = ok(await api().get(`/v1/applications/${created_case.id}/report`).set("x-api-key", partnerA.rawKey)).body;
+    assert.equal(report.result.final, "PASS"); assert.deepEqual(report.result.because, []);
+    assert.equal(report.subject.person.name, "Result Person"); assert.equal(report.subject.vehicle, null);
+    assert.equal(report.sections.length, 1); assert.equal(report.sections[0].module, "PEOPLE");
+    const referenceLine = report.sections[0].checks.find((check: { type: string }) => check.type === "REFERENCE_CHECK");
+    assert.deepEqual([referenceLine.required, referenceLine.onFail, referenceLine.state, referenceLine.note], [false, "IGNORE", "DISCREPANCY", "Referee did not answer"]);
+    assert.equal(JSON.stringify(report).includes("ABCDE1234F"), false, "no ID numbers in the report");
+    assert.equal((await api().get(`/v1/applications/${created_case.id}/report`).set("x-api-key", partnerB.rawKey)).status, 404);
+    assert.equal(ok(await as(keystone, "get", `/v1/admin/cases/${created_case.id}/report`)).body.result.final, "PASS");
+    assert.ok((ok(await as(keystone, "get", "/v1/admin/cases?result=PASS&limit=100")).body.items as Array<{ id: string }>).some((item) => item.id === created_case.id));
+    assert.equal(ok(await as(keystone, "get", `/v1/admin/cases/${created_case.id}`)).body.finalResult, "PASS");
+
+    // A failing receiver: the delivery waits to retry; a manual retry sends it now.
+    reply = 500; received.length = 0;
+    const testDelivery = ok(await as(keystone, "post", `/v1/admin/webhooks/${endpointId}/test`), 201).body;
+    await dispatcher.runOnce();
+    let row = await db.webhookDelivery.findUniqueOrThrow({ where: { id: testDelivery.id } });
+    assert.deepEqual([row.status, row.attempts, row.lastStatusCode], ["PENDING", 1, 500]); assert.ok(row.nextAttemptAt > new Date());
+    assert.equal(await dispatcher.runOnce(), 0, "not due yet");
+    reply = 200;
+    ok(await as(keystone, "post", `/v1/admin/webhooks/deliveries/${testDelivery.id}/retry`));
+    await dispatcher.runOnce();
+    row = await db.webhookDelivery.findUniqueOrThrow({ where: { id: testDelivery.id } });
+    assert.equal(row.status, "DELIVERED"); assert.equal(row.attempts, 2);
+    assert.equal((await as(keystone, "post", `/v1/admin/webhooks/deliveries/${testDelivery.id}/retry`)).status, 409);
+    assert.ok(ok(await as(keystone, "get", `/v1/admin/webhooks/${endpointId}/deliveries`)).body.items.some((item: { id: string; status: string }) => item.id === testDelivery.id && item.status === "DELIVERED"));
+
+    // A rotated secret signs from then on; a disabled endpoint gets nothing.
+    const rotated = ok(await as(keystone, "post", `/v1/admin/webhooks/${endpointId}/rotate-secret`)).body;
+    assert.notEqual(rotated.secret, created.secret);
+    received.length = 0;
+    ok(await as(keystone, "post", `/v1/admin/webhooks/${endpointId}/test`), 201);
+    await dispatcher.runOnce();
+    assert.ok(verify(rotated.secret, received[0]) && !verify(created.secret, received[0]));
+    ok(await as(keystone, "post", `/v1/admin/webhooks/${endpointId}/disable`));
+    assert.equal((await as(keystone, "post", `/v1/admin/webhooks/${endpointId}/test`)).status, 409);
+    const before = await db.webhookDelivery.count({ where: { endpointId } });
+    await createCase(partnerA, code, "Another Person");
+    assert.equal(await db.webhookDelivery.count({ where: { endpointId } }), before, "no events for a disabled endpoint");
+  } finally {
+    await new Promise((resolve) => receiver.close(resolve));
+  }
 });
 test("disabled organizations cannot use keys, issue new keys or be silently reactivated", async () => {
   await db.client.update({ where: { id: partnerB.client.id }, data: { status: "INACTIVE" } });

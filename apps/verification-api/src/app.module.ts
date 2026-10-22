@@ -19,6 +19,7 @@ import { PlatformModule } from "./modules/platform/platform.module";
 import { UsageModule } from "./modules/usage/usage.module";
 import { VerificationModule } from "./modules/verifications/verification.module";
 import { WorkerAuthModule } from "./modules/worker-auth/worker-auth.module";
+import { WebhooksModule } from "./modules/webhooks/webhooks.module";
 import { HealthController } from "./common/health.controller";
 
 // Global default rate limit for every route (per client IP). Tune via env.
@@ -45,6 +46,7 @@ const throttleLimit = Number(process.env.THROTTLE_LIMIT || 120);
     BillingModule,
     WorkerCaseModule,
     CardModule,
+    WebhooksModule,
   ],
   controllers: [HealthController],
   // Keyed on req.ip, which "trust proxy" in main.ts resolves to the real client. Keying on the

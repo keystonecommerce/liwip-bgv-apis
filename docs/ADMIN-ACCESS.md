@@ -78,6 +78,7 @@ Keys look like `domain.resource.action` (two or three parts). Each has a scope:
 | `users.read` | PARTNER | yes | View the partner's staff accounts. |
 | `users.manage` | PARTNER |  | Invite and remove the partner's staff. |
 | `audit.read` | PARTNER | yes | View the partner's audit trail. |
+| `webhooks.manage` | PARTNER |  | Add, disable and test the endpoints that receive signed case events ([REPORTS-AND-WEBHOOKS.md](REPORTS-AND-WEBHOOKS.md)). |
 | `field.tasks.read` | VENDOR | yes | View field verification tasks. |
 | `field.tasks.manage` | VENDOR |  | Assign and reassign field tasks to agents. |
 | `field.tasks.perform` | VENDOR |  | Accept, visit and submit field tasks. |
@@ -285,6 +286,7 @@ the last sign-in, confirmation or powerful action is older than `ADMIN_RECENT_SI
 | DELETE | `/v1/admin/users/:userId` | `users.manage` | removes this partner's roles only |
 | GET | `/v1/admin/cases` | `cases.read` (all partners allowed) | `?search=&state=&package=&checkType=&module=PEOPLE\|VEHICLE&programId=&relationship=ACTIVE\|ENDED&from=&to=&page=&limit=`. `search` matches case id, card number, a full 10-digit phone, a vehicle number (spaces and hyphens ignored), or the worker's name (case-sensitive substring). `module` keeps cases with any check of that module. Items: `{ id, partner, program, worker: { name, phoneLast4 }, status, package, modules, subject: { person, vehicle: { registrationNumber } \| null }, checks: { total, clear, needsReview, discrepancy, inProgress, waiting }, card, relationship, createdAt, updatedAt }` |
 | GET | `/v1/admin/cases/:caseId` | `cases.read` (all partners allowed) | `{ id, view: LIVE\|AS_OF_RELATIONSHIP_END, partner, program, status, package, worker, photo (data URL), subject, checks: [{ id, type, module, category, status, state, attemptCount, failureCode, failureReason, startedAt, completedAt, updatedAt }], checkSummary, modules: [{ module, checkIds, summary }], documents, card, relationship, timeline: [{ at, kind: CASE\|CHECK\|CARD\|RELATIONSHIP\|AUDIT, action, actorType, actorUserId, outcome, detail }], createdAt, updatedAt }` |
+| GET | `/v1/admin/cases/:caseId/report` | `cases.read` (all partners allowed) | The JSON case report ([REPORTS-AND-WEBHOOKS.md](REPORTS-AND-WEBHOOKS.md)). The list takes `?result=PASS\|FAIL\|REVIEW`, and the list and detail carry `finalResult`. |
 | GET | `/v1/admin/cases/:caseId/documents/:documentId/url` | `cases.documents.read` (all partners allowed) | `{ url, expires_in_seconds }` (signed S3 URL, `S3_PRESIGNED_URL_EXPIRY_SECONDS`) |
 | POST | `/v1/admin/cases/:caseId/relationship/end` | `workers.offboard` (all partners allowed) | `{ reason? }` |
 | POST | `/v1/admin/cases/:caseId/checks/:checkId/decision` | `cases.decide` (all partners allowed) | `{ decision: VERIFIED\|FAILED, note? }` |
@@ -303,6 +305,7 @@ COURT_RECORDS, EMPLOYMENT, EDUCATION, REFERENCES, SKILLS, FINANCIAL, OTHER.
 | GET | `/v1/admin/api-keys` | `apikeys.manage` (all partners allowed) | `?programId=`; items `{ id, name, keyPrefix, scopes, state: ACTIVE\|EXPIRED\|REVOKED, lastUsedAt, program, partner }`, never the key |
 | GET | `/v1/admin/api-keys/scopes` | `apikeys.manage` | the scopes this caller may grant, with labels (`worker:cases` for Keystone only) |
 | POST | `/v1/admin/api-keys` | `apikeys.manage` | `{ programId, name?, scopes: [], expiresInDays? }` → `{ apiKey, rawKey }` (shown once); recent sign-in |
+| GET, POST | `/v1/admin/webhooks`, `/:id/rotate-secret`, `/:id/disable`, `/:id/enable`, `/:id/test`, `/:id/deliveries`, `/deliveries/:deliveryId/retry` | `webhooks.manage` (all partners allowed) | See [REPORTS-AND-WEBHOOKS.md](REPORTS-AND-WEBHOOKS.md). Creating and rotating return the secret once and need a recent sign-in. |
 | POST | `/v1/admin/api-keys/:keyId/rotate` · `/revoke` | `apikeys.manage` | rotate returns the new `rawKey` once; recent sign-in |
 
 ### Packages, pricing, orders, seats and invites

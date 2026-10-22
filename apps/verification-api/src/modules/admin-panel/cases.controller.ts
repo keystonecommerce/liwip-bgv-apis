@@ -3,6 +3,7 @@ import type { Request } from "express";
 import { RateLimitService } from "../../common/security/rate-limit.service";
 import { AdminAccessGuard } from "../admin-access/admin-access.guard";
 import { AdminContext, AuditAction, CurrentAdmin, RequirePermission, SignedIn, RecentSignIn } from "../admin-access/admin-context";
+import { ReportService } from "../reports/report.service";
 import { CardLookupService } from "./card-lookup.service";
 import { CaseListQuery, CasesService } from "./cases.service";
 import { id, pageOf } from "./input";
@@ -14,7 +15,15 @@ import { id, pageOf } from "./input";
 @Controller("v1/admin/cases")
 @UseGuards(AdminAccessGuard)
 export class CasesController {
-  constructor(@Inject(CasesService) private readonly cases: CasesService) {}
+  constructor(@Inject(CasesService) private readonly cases: CasesService, @Inject(ReportService) private readonly reports: ReportService) {}
+
+  /** The case report as JSON: final result, subject and each module's checks. */
+  @Get(":caseId/report")
+  @RequirePermission("cases.read", { allPartners: true })
+  @AuditAction("cases.report", { resourceType: "Application", resourceParam: "caseId" })
+  report(@CurrentAdmin() admin: AdminContext, @Param("caseId") caseId: string) {
+    return this.reports.forAdmin(admin, id(caseId, "caseId"));
+  }
 
   @Get()
   @RequirePermission("cases.read", { allPartners: true })

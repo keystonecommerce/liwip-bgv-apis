@@ -20,6 +20,8 @@ import {
 } from "../../domain/verification.types";
 import { PrismaService } from "../../common/database/prisma.service";
 import { OPEN_FIELD_TASK_STATUSES } from "../field-tasks/field-tasks.types";
+import { recordCaseEvents } from "../webhooks/webhook-outbox";
+import { finalResultFor, rulesOf } from "../../domain/final-result";
 
 type StoredApplication = {
   apiKeyId?: string | null;
@@ -29,6 +31,8 @@ type StoredApplication = {
   packageId: string | null;
   status: string;
   workerPhone?: string | null;
+  finalResult?: string | null;
+  finalResultAt?: Date | null;
   data: unknown;
   createdAt: Date;
   updatedAt: Date;
@@ -184,6 +188,8 @@ export class VerificationStore {
       },
       status: types.length ? "PENDING_VERIFICATION" : "VERIFIED",
       recommendation: types.length ? "PENDING" : "PASS",
+      finalResult: null,
+      finalResultAt: null,
       data,
       verificationIds,
       createdAt: now.toISOString(),
@@ -290,15 +296,23 @@ export class VerificationStore {
     const owner = { tenantId: existing.tenantId, clientId: existing.clientId };
     return this.prisma.$transaction(async tx => {
       // Serialize recalculations for this case before reading its checkpoints.
-      const { cardNumber: assignedCardNumber, workerPhone } = await tx.application.update({ where: { id: applicationId, ...owner }, data: { updatedAt: new Date() }, select: { cardNumber: true, workerPhone: true } });
-      const checks = await tx.verification.findMany({ where: { applicationId, application: owner }, select: { status: true, type: true } });
+      const before = await tx.application.update({ where: { id: applicationId, ...owner }, data: { updatedAt: new Date() }, select: { cardNumber: true, workerPhone: true, status: true, finalResult: true, relationshipStatus: true, package: { select: { code: true, checks: true } } } });
+      const { cardNumber: assignedCardNumber, workerPhone } = before;
+      const checks = await tx.verification.findMany({ where: { applicationId, application: owner }, select: { status: true, type: true, createdAt: true }, orderBy: { createdAt: "asc" } });
       const status = applicationStatusForChecks(checks.map(check => check.status as VerificationStatus));
+      // The final result reads the latest row per check against the package's rule.
+      const latest = [...new Map(checks.map(check => [check.type, check])).values()];
+      const finalResult = finalResultFor(latest, rulesOf(before.package?.checks));
       // A field visit still open for a check decided without it is no longer needed.
       await tx.fieldTask.updateMany({
         where: { applicationId, ...owner, status: { in: [...OPEN_FIELD_TASK_STATUSES] }, verification: { status: { not: "MANUAL_REVIEW" } } },
         data: { status: "CANCELLED", cancelledAt: new Date(), cancelReason: "The check was decided without this visit" }
       });
-      await tx.application.update({ where: { id: applicationId, ...owner }, data: { status } });
+      await tx.application.update({ where: { id: applicationId, ...owner }, data: { status, finalResult, ...(finalResult !== before.finalResult ? { finalResultAt: finalResult ? new Date() : null } : {}) } });
+      await recordCaseEvents(tx, {
+        applicationId, ...owner, packageCode: before.package?.code ?? null, relationshipStatus: before.relationshipStatus,
+        before: { status: before.status, finalResult: before.finalResult }, after: { status, finalResult }
+      });
       if (workerPhone) {
         // A worker's card is released once every chosen check has finished (none running or in
         // review), Aadhaar is verified and at least one check passed. It lists the checks that
@@ -446,6 +460,8 @@ export class VerificationStore {
       } : undefined,
       status: record.status as ApplicationStatus,
       recommendation: this.recommendationFor(record.status as ApplicationStatus),
+      finalResult: (record.finalResult as ApplicationRecord["finalResult"]) ?? null,
+      finalResultAt: record.finalResultAt?.toISOString() ?? null,
       card: record.verificationCard ? this.mapCard(record.verificationCard) : undefined,
       data: record.data as unknown as ApplicationSchema,
       workerCase: Boolean(record.workerPhone),

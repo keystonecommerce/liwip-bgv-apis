@@ -29,6 +29,9 @@ model Application {
   relationshipEndStatus String?
   relationshipSnapshot  Json?
   relationshipEndedById String?
+  /// PASS | FAIL | REVIEW once no check is waiting or running (the package's result rule); null before.
+  finalResult           String?
+  finalResultAt         DateTime?
   createdAt             DateTime              @default(now())
   updatedAt             DateTime              @updatedAt
   package               VerificationPackage?  @relation(fields: [packageId], references: [id])
@@ -51,6 +54,7 @@ model Application {
   @@index([status])
   @@index([createdAt])
   @@index([tenantId, relationshipStatus])
+  @@index([tenantId, finalResult])
 }
 
 model VerificationCard {
@@ -99,6 +103,7 @@ model Tenant {
   documents           ApplicationDocument[]
   portalUsers         PortalUser[]
   staffBindings       StaffRoleBinding[]
+  webhookEndpoints    WebhookEndpoint[]
   discountRules       DiscountRule[]
   partnerPrices       PartnerPrice[]
   orders              Order[]
@@ -1149,3 +1154,47 @@ model CheckCost {
   updatedAt     DateTime @updatedAt
 }
 
+/// Where a partner receives signed case events. One program, or every program when clientId is null.
+model WebhookEndpoint {
+  id               String            @id
+  tenantId         String
+  clientId         String?
+  url              String
+  description      String?
+  /// The signing secret, encrypted (AES-256-GCM with WEBHOOK_SECRET_KEY). Shown once when made or rotated.
+  secretCiphertext String
+  /// ACTIVE | DISABLED
+  status           String            @default("ACTIVE")
+  createdById      String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  deliveries       WebhookDelivery[]
+
+  @@index([tenantId, status])
+}
+
+/// One event for one endpoint: written with the change that caused it, then sent and retried.
+model WebhookDelivery {
+  id             String          @id
+  endpointId     String
+  tenantId       String
+  eventId        String
+  event          String
+  applicationId  String?
+  payload        Json
+  /// PENDING | DELIVERING | DELIVERED | FAILED
+  status         String          @default("PENDING")
+  attempts       Int             @default(0)
+  nextAttemptAt  DateTime        @default(now())
+  lastStatusCode Int?
+  lastError      String?
+  deliveredAt    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  endpoint       WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([endpointId, createdAt])
+  @@index([applicationId])
+}

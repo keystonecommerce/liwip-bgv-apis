@@ -196,7 +196,7 @@ All admin routes are under `AdminAccessGuard`. State-changing calls need the CSR
 | Method | Route | Permission | Body / notes |
 |---|---|---|---|
 | GET | `/v1/admin/packages` | `packages.manage` | live and draft version per code, with `addOnCodes` |
-| POST | `/v1/admin/packages` | `packages.manage` | `{ code, name, role?, module?, listPricePaise, checks: [{ type, mode?, execution? }], description?, displayOrder? }` → v1 DRAFT. `module` is `PEOPLE` (default) or `VEHICLE`; a Vehicle package holds only vehicle checks (RC, challans), and a People package may add them for a driver with their vehicle. |
+| POST | `/v1/admin/packages` | `packages.manage` | `{ code, name, role?, module?, listPricePaise, checks: [{ type, mode?, execution? }], description?, displayOrder? }` → v1 DRAFT. `module` is `PEOPLE` (default) or `VEHICLE`; a Vehicle package holds only vehicle checks (RC, challans), and a People package may add them for a driver with their vehicle. Each check may set `onFail` (`FAIL`, `REVIEW` or `IGNORE`) for the case's final result ([REPORTS-AND-WEBHOOKS.md](REPORTS-AND-WEBHOOKS.md)). |
 | PUT | `/v1/admin/packages/:code/draft` | `packages.manage` | any field above except `code`; creates the draft from the live version |
 | POST | `/v1/admin/packages/:code/publish` · `/retire` | `packages.manage` | publishing retires the live version |
 | PUT | `/v1/admin/packages/:code/add-ons` | `packages.manage` | `{ addOnChecks: ["ECOURTS_SEARCH", …] }`: check types not already in the package, each with a list price |

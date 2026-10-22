@@ -55,6 +55,7 @@ export const PERMISSIONS = [
   permission("orders.read", "View orders", "View orders, payments and invoices.", "PARTNER", true),
   permission("people.invite", "Add people", "Upload people and send verification links, using seats.", "PARTNER"),
   permission("apikeys.manage", "Manage API keys", "Create, rotate and revoke API keys for the partner's programs. A new key is shown once.", "PARTNER"),
+  permission("webhooks.manage", "Manage webhooks", "Add, disable and test the endpoints that receive signed case events. A new secret is shown once.", "PARTNER"),
   // Vendor (VENDOR)
   permission("field.tasks.read", "View field tasks", "View field verification tasks.", "VENDOR", true),
   permission("field.tasks.manage", "Assign field tasks", "Assign and reassign field tasks to agents.", "VENDOR"),
@@ -101,7 +102,7 @@ export const SYSTEM_ROLES = [
   {
     key: "PARTNER_ADMIN", name: "Partner admin", scope: "PARTNER",
     description: "Manages the partner's team, billing and API keys, and sees every case.",
-    permissions: ["organisation.read", "cases.read", "cases.documents.read", "workers.offboard", "cards.read", "users.read", "users.manage", "audit.read", "billing.buy", "orders.read", "people.invite", "apikeys.manage"]
+    permissions: ["organisation.read", "cases.read", "cases.documents.read", "workers.offboard", "cards.read", "users.read", "users.manage", "audit.read", "billing.buy", "orders.read", "people.invite", "apikeys.manage", "webhooks.manage"]
   },
   {
     key: "PARTNER_OPERATOR", name: "Partner operator", scope: "PARTNER",
