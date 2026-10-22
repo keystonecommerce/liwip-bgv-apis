@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BGV_MODULES, moduleOf } from "../../domain/modules";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../common/database/prisma.service";
@@ -10,7 +11,16 @@ import type { AddOnItem, DiscountTier, PricedItem } from "./pricing";
 const CODE = /^[A-Z][A-Z0-9_]{1,39}$/;
 /** Add-ons are check types priced from CheckRate, not packages of their own. */
 const KINDS = ["BASE"] as const;
-const MODULES = ["PEOPLE", "VEHICLE"] as const;
+const MODULES = BGV_MODULES;
+
+/**
+ * A Vehicle package holds only vehicle checks. A People package may add vehicle checks: a driver
+ * verified with their vehicle.
+ */
+function checkModules(module: string, checks: Prisma.InputJsonValue): void {
+  const outside = (checks as Array<{ type: string }>).filter((check) => module === "VEHICLE" && moduleOf(check.type) !== "VEHICLE").map((check) => check.type);
+  if (outside.length) throw new BadRequestException(`A Vehicle package holds only vehicle checks; move ${outside.join(", ")} to a People package`);
+}
 
 export interface PackageInput {
   code?: string;
@@ -130,14 +140,17 @@ export class CatalogService {
     const code = packageCode(input.code);
     if (await this.prisma.verificationPackage.count({ where: { code } })) throw new ConflictException(`${code} already exists; edit its draft instead`);
     const kind = oneOf(input.kind ?? "BASE", "kind", KINDS);
+    const module = oneOf(input.module ?? "PEOPLE", "module", MODULES);
+    const checks = checksOf(input.checks);
+    checkModules(module, checks);
     const row = await this.prisma.verificationPackage.create({
       data: {
         id: `package_${randomUUID()}`, code, version: 1, status: "DRAFT", isActive: false,
         name: text(input.name, "name", 80), description: optionalText(input.description, "description", 300) ?? null,
         role: kind === "BASE" ? (optionalText(input.role, "role", 40)?.toUpperCase() ?? null) : null,
-        module: oneOf(input.module ?? "PEOPLE", "module", MODULES), kind,
+        module, kind,
         listPricePaise: paise(input.listPricePaise, "listPricePaise"), priceInr: Math.round(paise(input.listPricePaise, "listPricePaise") / 100),
-        checks: checksOf(input.checks), displayOrder: input.displayOrder === undefined ? 100 : wholeNumber(input.displayOrder, "displayOrder", 0, 10_000),
+        checks, displayOrder: input.displayOrder === undefined ? 100 : wholeNumber(input.displayOrder, "displayOrder", 0, 10_000),
         maxSeatsPerOrder: seatLimit(input.maxSeatsPerOrder) ?? null, createdById: admin.user.id
       }
     });
@@ -163,6 +176,7 @@ export class CatalogService {
       displayOrder: input.displayOrder === undefined ? base.displayOrder : wholeNumber(input.displayOrder, "displayOrder", 0, 10_000),
       maxSeatsPerOrder: seatLimit(input.maxSeatsPerOrder) === undefined ? base.maxSeatsPerOrder : seatLimit(input.maxSeatsPerOrder)
     };
+    checkModules(changes.module, changes.checks);
     const row = draft
       ? await this.prisma.verificationPackage.update({ where: { id: draft.id }, data: changes })
       : await this.prisma.verificationPackage.create({

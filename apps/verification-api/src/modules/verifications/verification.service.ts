@@ -1,4 +1,5 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { moduleOf, modulesOf, subjectOf } from "../../domain/modules";
 import { ApplicationOwner, ApplicationSchema, PackageCheckRule, SensitiveVerificationInputs, VerificationType } from "../../domain/verification.types";
 import { VerificationQueue } from "./verification.queue";
 import { VerificationStore } from "./verification.repository";
@@ -82,7 +83,9 @@ export class VerificationService {
   async getApplicationDetails(id: string, owner?: ApplicationOwner) {
     const application = await this.store.getApplication(id, owner);
     if (!application) throw new NotFoundException(`Application ${id} not found`);
-    return { ...application, verifications: await this.store.getVerificationsForApplication(id, owner) };
+    const verifications = await this.store.getVerificationsForApplication(id, owner);
+    const types = verifications.map((verification) => verification.type);
+    return { ...application, modules: modulesOf(types), subject: subjectOf(types, application.data), verifications: verifications.map((verification) => ({ ...verification, module: moduleOf(verification.type) })) };
   }
 
   async retryVerification(id: string, owner?: ApplicationOwner) {

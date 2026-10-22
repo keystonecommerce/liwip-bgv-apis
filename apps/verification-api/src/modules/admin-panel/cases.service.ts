@@ -4,6 +4,7 @@ import { PrismaService } from "../../common/database/prisma.service";
 import { AdminContext, partnerDb } from "../admin-access/admin-context";
 import { hasPermission } from "../admin-access/admin-permissions";
 import { categoryOf, checkState, latestChecks, photoDataUrl, workerName } from "../cards/card-views";
+import { BGV_MODULES, VEHICLE_CHECK_TYPES, moduleOf, modulesOf, subjectOf } from "../../domain/modules";
 import { DocumentStorageService } from "../document-storage/document-storage.service";
 import { VerificationStore } from "../verifications/verification.repository";
 import { Page, maskPhone, oneOf, optionalDate, optionalText, paginated, text } from "./input";
@@ -11,7 +12,7 @@ import { Page, maskPhone, oneOf, optionalDate, optionalText, paginated, text } f
 const STATES = ["DRAFT", "PENDING_VERIFICATION", "VERIFICATION_IN_PROGRESS", "VERIFIED", "VERIFICATION_FAILED", "MANUAL_REVIEW"] as const;
 
 export interface CaseListQuery {
-  search?: string; state?: string; package?: string; checkType?: string; programId?: string; relationship?: string; from?: string; to?: string;
+  search?: string; state?: string; package?: string; checkType?: string; module?: string; programId?: string; relationship?: string; from?: string; to?: string;
 }
 
 const CASE_INCLUDE = {
@@ -33,6 +34,8 @@ export interface RelationshipSnapshot {
   package: { code: string; name: string; version: number } | null;
   checks: Array<{ id: string; type: string; status: string; attemptCount: number; failureCode: string | null; failureReason: string | null; createdAt: string; startedAt: string | null; completedAt: string | null; updatedAt: string }>;
   checkTypes: string[];
+  /** The vehicle on the case when the relationship ended (absent in snapshots taken before modules). */
+  vehicle?: { registrationNumber: string | null } | null;
   card: { cardNumber: string; status: string; issuedAt: string; expiresAt: string } | null;
   updatedAt: string;
 }
@@ -42,6 +45,7 @@ const iso = (value: Date | null | undefined) => value?.toISOString() ?? null;
 const checkView = (check: { id: string; type: string; status: string; attemptCount: number; failureCode: string | null; failureReason: string | null; startedAt: string | null; completedAt: string | null; updatedAt: string }) => ({
   id: check.id,
   type: check.type,
+  module: moduleOf(check.type),
   category: categoryOf(check.type),
   status: check.status,
   state: checkState(check.status),
@@ -58,6 +62,12 @@ const serialiseCheck = (check: CheckRow) => ({
   createdAt: check.createdAt.toISOString(), startedAt: iso(check.startedAt), completedAt: iso(check.completedAt), updatedAt: check.updatedAt.toISOString()
 });
 
+/** The subject as it was at the relationship end; older snapshots have no vehicle number. */
+function snapshotSubject(snapshot: RelationshipSnapshot) {
+  const modules = modulesOf(snapshot.checkTypes);
+  return { person: modules.includes("PEOPLE"), vehicle: modules.includes("VEHICLE") ? (snapshot.vehicle ?? { registrationNumber: null }) : null };
+}
+
 function summarise(checks: Array<{ status: string }>) {
   const count = (state: string) => checks.filter((check) => checkState(check.status) === state).length;
   return { total: checks.length, clear: count("CLEAR"), needsReview: count("NEEDS_REVIEW"), discrepancy: count("DISCREPANCY"), inProgress: count("IN_PROGRESS"), waiting: count("WAITING") };
@@ -73,6 +83,7 @@ export function buildSnapshot(row: CaseRow, now = new Date()): RelationshipSnaps
     package: row.package ? { code: row.package.code, name: row.package.name, version: row.package.version } : null,
     checks,
     checkTypes: [...new Set(checks.map((check) => check.type))],
+    vehicle: subjectOf(checks.map((check) => check.type), row.data).vehicle,
     card: card ? { cardNumber: card.cardNumber, status: card.status, issuedAt: card.issuedAt.toISOString(), expiresAt: card.expiresAt.toISOString() } : null,
     updatedAt: row.updatedAt.toISOString()
   };
@@ -114,6 +125,17 @@ export class CasesService {
         ? { OR: [{ relationshipStatus: "ACTIVE", verifications: { some: { type } } }, { relationshipStatus: "ENDED", relationshipSnapshot: { path: ["checkTypes"], array_contains: [type] } }] }
         : { verifications: { some: { type } } });
     }
+    if (query.module) {
+      // A module is on the case when any of its checks is.
+      const module = oneOf(query.module, "module", BGV_MODULES);
+      const types = { in: [...VEHICLE_CHECK_TYPES] };
+      const live: Prisma.ApplicationWhereInput = { verifications: { some: { type: module === "VEHICLE" ? types : { notIn: types.in } } } };
+      // Ended cases keep their check types in JSON, where "some type outside the list" cannot be asked: each counts as People.
+      const ended: Prisma.ApplicationWhereInput = module === "VEHICLE"
+        ? { OR: VEHICLE_CHECK_TYPES.map((type) => ({ relationshipSnapshot: { path: ["checkTypes"], array_contains: [type] } })) }
+        : {};
+      and.push(frozen ? { OR: [{ relationshipStatus: "ACTIVE", ...live }, { relationshipStatus: "ENDED", ...ended }] } : live);
+    }
     if (query.programId) and.push({ clientId: text(query.programId, "programId", 100) });
     if (query.relationship) and.push({ relationshipStatus: oneOf(query.relationship, "relationship", ["ACTIVE", "ENDED"] as const) });
     const from = optionalDate(query.from, "from");
@@ -131,6 +153,8 @@ export class CasesService {
         { data: { path: ["personal", "nameAsAadhaar"], string_contains: search } }
       ];
       if (/^(\+?91)?[6-9]\d{9}$/.test(search.replace(/[\s-]/g, ""))) or.push({ workerPhone: `91${digits.slice(-10)}` });
+      const vehicleNumber = search.toUpperCase().replace(/[\s-]/g, "");
+      if (/^[A-Z0-9]{6,12}$/.test(vehicleNumber) && /\d/.test(vehicleNumber) && /[A-Z]/.test(vehicleNumber)) or.push({ data: { path: ["vehicle", "registrationNumber"], equals: vehicleNumber } });
       and.push({ OR: or });
     }
     const where: Prisma.ApplicationWhereInput = { AND: and };
@@ -152,6 +176,8 @@ export class CasesService {
       worker: snapshot ? snapshot.worker : { name: workerName(row.data), phoneLast4: maskPhone(row.workerPhone) },
       status: snapshot ? snapshot.status : row.status,
       package: snapshot ? snapshot.package : row.package,
+      modules: modulesOf(checks.map((check) => check.type)),
+      subject: snapshot ? snapshotSubject(snapshot) : subjectOf(checks.map((check) => check.type), row.data),
       checks: summarise(checks),
       card: card ? { cardNumber: card.cardNumber, status: card.status } : null,
       relationship: { status: row.relationshipStatus, endedAt: iso(row.relationshipEndedAt) },
@@ -206,8 +232,14 @@ export class CasesService {
         ? { ...snapshot.worker, identityVerified: null }
         : { name: workerName(row.data), declaredName: data.personal?.declaredName ?? null, phoneLast4: maskPhone(row.workerPhone), identityVerified: data.identity?.status === "VERIFIED" },
       photo,
+      subject: snapshot ? snapshotSubject(snapshot) : subjectOf(checks.map((check) => check.type), row.data),
       checks: checks.map(checkView),
       checkSummary: summarise(checks),
+      // The report's sections: each module's checks and how they stand.
+      modules: modulesOf(checks.map((check) => check.type)).map((module) => {
+        const own = checks.filter((check) => moduleOf(check.type) === module);
+        return { module, checkIds: own.map((check) => check.id), summary: summarise(own) };
+      }),
       documents: documents.map((document) => ({ ...document, uploadedAt: iso(document.uploadedAt), createdAt: document.createdAt.toISOString() })),
       card,
       relationship: { status: row.relationshipStatus, endedAt: iso(row.relationshipEndedAt), reason: row.relationshipEndReason },
