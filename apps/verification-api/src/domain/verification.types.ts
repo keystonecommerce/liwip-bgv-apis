@@ -81,6 +81,8 @@ export interface ApplicationSchema {
   consentItems?: string[];
   /** Checks the worker chose to run (worker self-verification). */
   selectedChecks?: string[];
+  /** Opened through a partner's invite: the partner chose the package, so the checks are fixed. */
+  sponsor?: { inviteId: string; partnerName: string; packageName: string };
   /** Identity the worker proved with Aadhaar. Every name-matched check compares against fullName. */
   identity?: WorkerIdentityRecord;
 }

@@ -9,7 +9,7 @@ export class ProviderContextInterceptor implements NestInterceptor {
     const client = context.switchToHttp().getRequest<RequestWithClient>().clientContext;
     if (!client) return next.handle();
     // A server-created correlation ID, never a body/query tenant or partner ID.
-    return new Observable(subscriber => providerCallContext.run({ tenantId: client.tenantId, clientId: client.clientId, apiKeyId: client.apiKeyId, operationKey: `http_${randomUUID()}` }, () => {
+    return new Observable(subscriber => providerCallContext.run({ tenantId: client.tenantId, clientId: client.clientId, apiKeyId: client.actingForInvite ? undefined : client.apiKeyId, operationKey: `http_${randomUUID()}` }, () => {
       const subscription = next.handle().subscribe(subscriber);
       return () => subscription.unsubscribe();
     }));

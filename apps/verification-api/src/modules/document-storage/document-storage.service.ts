@@ -166,7 +166,8 @@ export class DocumentStorageService {
     return documents.map((document) => this.toPublicDocument(document));
   }
 
-  async createDownloadUrl(applicationId: string, documentId: string, client: ClientContext) {
+  /** Also used by the admin panel, which passes the case owner instead of an API key context. */
+  async createDownloadUrl(applicationId: string, documentId: string, client: Pick<ClientContext, "tenantId" | "clientId">) {
     const document = await this.findOwnedDocument(applicationId, documentId, client);
     if (document.status !== "UPLOADED" || document.deletedAt) {
       throw new ConflictException("The document is not available for download.");
@@ -210,7 +211,7 @@ export class DocumentStorageService {
     if (!application) throw new NotFoundException("Application not found.");
   }
 
-  private async findOwnedDocument(applicationId: string, documentId: string, client: ClientContext) {
+  private async findOwnedDocument(applicationId: string, documentId: string, client: Pick<ClientContext, "tenantId" | "clientId">) {
     const document = await this.prisma.applicationDocument.findFirst({
       where: {
         id: documentId,

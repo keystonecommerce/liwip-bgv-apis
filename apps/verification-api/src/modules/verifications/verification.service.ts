@@ -39,7 +39,8 @@ export class VerificationService {
       throw new BadRequestException("Worker consent is required before verification jobs can be created");
     }
     const packageCode = data.packageCode || "BASIC_ID";
-    const verificationPackage = await this.store.getPackageByCode(packageCode, data.packageVersion);
+    const owner = requestedOwner || await this.store.getWorkerPortalOwner();
+    const verificationPackage = await this.store.getPackageByCode(packageCode, data.packageVersion, owner.tenantId);
     if (!verificationPackage || !verificationPackage.isActive) {
       throw new BadRequestException(`Verification package ${packageCode}${data.packageVersion ? ` v${data.packageVersion}` : ""} was not found or is inactive`);
     }
@@ -53,7 +54,6 @@ export class VerificationService {
       packageVersion: verificationPackage.version
     };
     const types = this.determineVerificationTypes(normalizedData, verificationPackage.checks);
-    const owner = requestedOwner || await this.store.getWorkerPortalOwner();
     const application = await this.store.createApplication(normalizedData, types, verificationPackage, owner);
     if (sensitiveInputs) this.store.setSensitiveInputs(application.id, sensitiveInputs);
     let hasManualCheck = false;

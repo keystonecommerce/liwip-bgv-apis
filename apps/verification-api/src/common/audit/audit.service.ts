@@ -1,14 +1,17 @@
 import { BadRequestException, Inject, Injectable, Logger } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../database/prisma.service";
 
-export type AuditActor = "PARTNER" | "ADMIN" | "SYSTEM";
+/** PARTNER: API key. ADMIN: legacy X-Admin-Key. STAFF / VERIFIER: admin panel accounts. PUBLIC: anonymous card checks. */
+export type AuditActor = "PARTNER" | "ADMIN" | "SYSTEM" | "STAFF" | "VERIFIER" | "PUBLIC";
 export type AuditOutcome = "SUCCESS" | "CLIENT_ERROR" | "SERVER_ERROR" | "REJECTED";
 
 export interface AuditEntry {
   actorType: AuditActor;
   action: string;
   outcome: AuditOutcome;
+  actorUserId?: string | null;
   tenantId?: string | null;
   tenantSlug?: string | null;
   clientId?: string | null;
@@ -25,6 +28,7 @@ export interface AuditEntry {
   userAgent?: string | null;
   durationMs?: number | null;
   message?: string | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface AuditQuery {
@@ -49,6 +53,8 @@ export class AuditService {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
   /**
+   * The one audit writer: partner API calls, legacy admin calls, every admin panel
+   * request and card lookup, and sign-in events all land here.
    * Persist one audit row. Fire-and-forget by design: auditing must never
    * throw into or slow down the request path, so failures are only logged.
    */
@@ -58,6 +64,7 @@ export class AuditService {
         data: {
           id: `audit_${randomUUID()}`,
           actorType: entry.actorType,
+          actorUserId: entry.actorUserId ?? null,
           action: cap(entry.action, 120) ?? "unknown",
           outcome: entry.outcome,
           tenantId: entry.tenantId ?? null,
@@ -76,6 +83,7 @@ export class AuditService {
           userAgent: cap(entry.userAgent, 300),
           durationMs: entry.durationMs ?? null,
           message: cap(entry.message, 1000),
+          metadata: entry.metadata ? (entry.metadata as Prisma.InputJsonValue) : undefined,
         },
       })
       .catch((error: unknown) => {

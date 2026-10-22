@@ -1,6 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { createHash } from "node:crypto";
-import { hashPortalPassword } from "../apps/verification-api/src/modules/portal-auth/password";
+import { ensureLiwipDirect, provisionPlatformAdmin } from "../apps/verification-api/src/modules/admin-access/bootstrap";
 
 const prisma = new PrismaClient();
 
@@ -118,6 +118,10 @@ const packages = [
 ] as const;
 
 async function main(): Promise<void> {
+  // The fallback keys below are public in this file: never seed them where real people's data lives.
+  if (process.env.NODE_ENV === "production" && (!process.env.DEV_PLATFORM_API_KEY || !process.env.DEV_SECOND_PLATFORM_API_KEY)) {
+    throw new Error("Set DEV_PLATFORM_API_KEY and DEV_SECOND_PLATFORM_API_KEY before seeding a production build");
+  }
   const developmentApiKey = process.env.DEV_PLATFORM_API_KEY || "dev-gig-platform-key-change-me";
   const secondDevelopmentApiKey = process.env.DEV_SECOND_PLATFORM_API_KEY || "dev-partner-platform-key-change-me";
   const tenant = await prisma.tenant.upsert({
@@ -143,9 +147,12 @@ async function main(): Promise<void> {
   });
   const partnerClient = await prisma.client.upsert({
     where: { tenantId_code: { tenantId: partnerTenant.id, code: "PLATFORM" } },
-    update: { name: "Demo Partner Platform", status: "ACTIVE" },
-    create: { id: "client_demo_partner_platform", tenantId: partnerTenant.id, code: "PLATFORM", name: "Demo Partner Platform", status: "ACTIVE" }
+    update: { name: "Demo Partner Platform", status: "ACTIVE", corporateCode: "DEMO-PARTNER" },
+    create: { id: "client_demo_partner_platform", tenantId: partnerTenant.id, code: "PLATFORM", name: "Demo Partner Platform", status: "ACTIVE", corporateCode: "DEMO-PARTNER" }
   });
+  await ensureLiwipDirect(prisma);
+  // Admin panel: the first Keystone platform admin (signs in by email code; dev codes are logged).
+  if (process.env.ADMIN_BOOTSTRAP_EMAIL) await provisionPlatformAdmin(prisma, process.env.ADMIN_BOOTSTRAP_EMAIL, "Keystone admin");
   const partnerKeyHash = createHash("sha256").update(secondDevelopmentApiKey).digest("hex");
   await prisma.apiKey.upsert({
     where: { keyHash: partnerKeyHash },
@@ -166,6 +173,9 @@ async function main(): Promise<void> {
         description: item.description,
         kind: item.kind,
         priceInr: item.priceInr,
+        // What quotes and the Buy screen read (docs/PRICING-AND-PAYMENTS.md); priceInr is legacy.
+        listPricePaise: item.priceInr * 100,
+        status: "PUBLISHED",
         advertisedCheckCount: item.advertisedCheckCount,
         targetWorkforce: item.targetWorkforce,
         displayOrder: item.displayOrder,
@@ -174,72 +184,45 @@ async function main(): Promise<void> {
       },
       create: {
         ...item,
+        listPricePaise: item.priceInr * 100,
+        status: "PUBLISHED",
+        publishedAt: new Date(),
         checks: [...item.checks],
         isActive: true
       }
     });
   }
 
-  const portalUsers = [
-    {
-      id: "portal_user_demo_company_admin",
-      tenantId: partnerTenant.id,
-      clientId: partnerClient.id,
-      email: process.env.DEV_CORPORATE_ADMIN_EMAIL,
-      password: process.env.DEV_CORPORATE_ADMIN_PASSWORD,
-      displayName: "Demo Partner Admin",
-      role: "CORPORATE_ADMIN"
-    },
-    {
-      id: "portal_user_liwip_support",
-      tenantId: tenant.id,
-      clientId: undefined,
-      email: process.env.DEV_LIWIP_SUPPORT_EMAIL,
-      password: process.env.DEV_LIWIP_SUPPORT_PASSWORD,
-      displayName: "LIWIP Support",
-      role: "LIWIP_SUPPORT"
-    },
-    {
-      id: "portal_user_demo_field_agent",
-      tenantId: partnerTenant.id,
-      clientId: partnerClient.id,
-      email: process.env.DEV_FIELD_AGENT_EMAIL,
-      password: process.env.DEV_FIELD_AGENT_PASSWORD,
-      displayName: "Demo Field Agent",
-      role: "FIELD_AGENT"
-    }
+  // Demo staff for local development: email-code sign-in with a role, no passwords.
+  // Each address is optional; codes are printed to the API log outside production.
+  const demoVendor = await prisma.vendor.upsert({
+    where: { slug: "demo-field-vendor" },
+    update: { status: "ACTIVE" },
+    create: { id: "vendor_demo_field", slug: "demo-field-vendor", name: "Demo Field Vendor", status: "ACTIVE" }
+  });
+  const demoStaff = [
+    { email: process.env.DEV_CORPORATE_ADMIN_EMAIL, displayName: "Demo Partner Admin", roleKey: "PARTNER_ADMIN", scopeType: "PARTNER", tenantId: partnerTenant.id, vendorId: null, scopeKey: `partner:${partnerTenant.id}` },
+    { email: process.env.DEV_LIWIP_SUPPORT_EMAIL, displayName: "Liwip Support", roleKey: "KEYSTONE_OPS_REVIEWER", scopeType: "GLOBAL", tenantId: null, vendorId: null, scopeKey: "GLOBAL" },
+    { email: process.env.DEV_FIELD_AGENT_EMAIL, displayName: "Demo Field Agent", roleKey: "FIELD_AGENT", scopeType: "VENDOR", tenantId: null, vendorId: demoVendor.id, scopeKey: `vendor:${demoVendor.id}` }
   ];
-
-  for (const user of portalUsers) {
-    if (!user.email || !user.password) continue;
-    const email = user.email.trim().toLowerCase();
-    const passwordHash = await hashPortalPassword(user.password);
-    await prisma.portalUser.upsert({
+  for (const staff of demoStaff) {
+    if (!staff.email) continue;
+    const email = staff.email.trim().toLowerCase();
+    const user = await prisma.portalUser.upsert({
       where: { email },
-      update: {
-        tenantId: user.tenantId,
-        clientId: user.clientId,
-        displayName: user.displayName,
-        passwordHash,
-        role: user.role,
-        status: "ACTIVE"
-      },
-      create: {
-        id: user.id,
-        tenantId: user.tenantId,
-        clientId: user.clientId,
-        email,
-        displayName: user.displayName,
-        passwordHash,
-        role: user.role,
-        status: "ACTIVE"
-      }
+      update: { displayName: staff.displayName, status: "ACTIVE" },
+      create: { id: `staff_${createHash("sha256").update(email).digest("hex").slice(0, 16)}`, email, displayName: staff.displayName, status: "ACTIVE" }
+    });
+    await prisma.staffRoleBinding.upsert({
+      where: { userId_roleKey_scopeKey: { userId: user.id, roleKey: staff.roleKey, scopeKey: staff.scopeKey } },
+      update: {},
+      create: { id: `binding_${createHash("sha256").update(`${user.id}:${staff.roleKey}:${staff.scopeKey}`).digest("hex").slice(0, 16)}`, userId: user.id, roleKey: staff.roleKey, scopeType: staff.scopeType, scopeKey: staff.scopeKey, tenantId: staff.tenantId, vendorId: staff.vendorId }
     });
   }
 
   // Sample field-verification fixture: a partner-tenant case whose physical-address
-  // check awaits a field visit. It surfaces as an available FieldTask for the seeded
-  // field agent so the field app has real work on first run.
+  // check awaits a field visit, handed to the demo vendor so the seeded field agent has
+  // real work on first run.
   const sampleApplicationData = {
     packageCode: "BASIC_ID",
     packageVersion: 1,
@@ -274,10 +257,21 @@ async function main(): Promise<void> {
     create: {
       id: "verification_seed_field_demo",
       applicationId: "app_seed_field_demo",
+      tenantId: partnerTenant.id,
+      clientId: partnerClient.id,
       type: "CURRENT_ADDRESS",
       status: "MANUAL_REVIEW",
       provider: "field",
       attemptCount: 0
+    }
+  });
+  await prisma.fieldTask.upsert({
+    where: { verificationId: "verification_seed_field_demo" },
+    update: { vendorId: demoVendor.id },
+    create: {
+      id: "ftask_seed_field_demo", tenantId: partnerTenant.id, clientId: partnerClient.id, applicationId: "app_seed_field_demo",
+      verificationId: "verification_seed_field_demo", vendorId: demoVendor.id, status: "PENDING_ASSIGNMENT", taskType: "ADDRESS_VERIFICATION",
+      workerName: "Rahul Kumar", addressText: sampleApplicationData.personal.submittedAddress
     }
   });
 }

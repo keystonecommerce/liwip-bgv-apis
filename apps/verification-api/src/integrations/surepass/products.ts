@@ -108,6 +108,11 @@ export function isCheckAvailable(type: VerificationType): boolean {
   return (CHECK_PRODUCTS[type] ?? []).some((product) => enabled.has(product));
 }
 
+/** Every check type this platform can run today: Surepass checks whose product is enabled, and manual checks. */
+export function availableCheckTypes(): VerificationType[] {
+  return [...(Object.keys(CHECK_PRODUCTS) as VerificationType[]), ...MANUAL_CHECKS].filter(isCheckAvailable);
+}
+
 /** Refuse before dispatch, so a disabled product never reaches Surepass. */
 export function assertProductEnabled(pathname: string): void {
   const product = productForPath(pathname);

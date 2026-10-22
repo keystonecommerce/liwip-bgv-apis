@@ -1,53 +1,93 @@
-import { Body, Controller, Get, Inject, Param, Post, UseGuards } from "@nestjs/common";
-import type { PortalUserContext } from "../portal-auth/portal-auth.service";
-import { CurrentPortalUser, PortalAuthGuard, PortalRoles } from "../portal-auth/portal-context";
-import { FieldTasksService } from "./field-tasks.service";
+import { Body, Controller, ForbiddenException, Get, HttpCode, Inject, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { AdminAccessGuard } from "../admin-access/admin-access.guard";
+import { AdminContext, AuditAction, CurrentAdmin, RequirePermission } from "../admin-access/admin-context";
+import { id } from "../admin-panel/input";
+import { FieldAgent, FieldTasksService } from "./field-tasks.service";
 
-@Controller("v1/field/tasks")
-@UseGuards(PortalAuthGuard)
-@PortalRoles("FIELD_AGENT")
+/** The vendor the request acts for (field.tasks.* are VENDOR permissions). */
+function vendorOf(admin: AdminContext): string | null {
+  if (admin.scope.kind === "VENDOR") return admin.scope.vendorId;
+  if (admin.scope.kind === "ALL_VENDORS") return null;
+  throw new ForbiddenException("No vendor on this request");
+}
+
+function agentOf(admin: AdminContext): FieldAgent {
+  const vendorId = vendorOf(admin);
+  if (!vendorId) throw new ForbiddenException("Choose the vendor you are working for (x-vendor-id)");
+  return { userId: admin.user.id, vendorId };
+}
+
+/**
+ * Field tasks, on staff sessions like every other admin route. Keystone (every vendor) lists
+ * tasks and hands each to a vendor; vendor admins see their vendor's tasks; field agents work
+ * their vendor's pool. A field agent working for one vendor needs no x-vendor-id.
+ */
+@Controller("v1/admin/field-tasks")
+@UseGuards(AdminAccessGuard)
 export class FieldTasksController {
   constructor(@Inject(FieldTasksService) private readonly service: FieldTasksService) {}
 
   @Get()
-  list(@CurrentPortalUser() agent: PortalUserContext) {
-    return this.service.listForAgent(agent);
+  @RequirePermission("field.tasks.read", { allVendors: true })
+  @AuditAction("field.tasks.list")
+  list(@CurrentAdmin() admin: AdminContext, @Query("status") status?: string, @Query("unassigned") unassigned?: string) {
+    return this.service.listForManager(vendorOf(admin), { status: status ? String(status).toUpperCase() : undefined, unassigned: unassigned === "true" });
+  }
+
+  /** Keystone only: which vendor does this visit. { vendorId: null } takes it back. */
+  @Post(":id/vendor")
+  @HttpCode(200)
+  @RequirePermission("field.tasks.manage", { allVendors: true })
+  @AuditAction("field.tasks.assign_vendor", { resourceType: "FieldTask", resourceParam: "id" })
+  assignVendor(@CurrentAdmin() admin: AdminContext, @Param("id") taskId: string, @Body() body: { vendorId?: string | null }) {
+    if (admin.scope.kind !== "ALL_VENDORS") throw new ForbiddenException("Only Keystone hands tasks to vendors");
+    return this.service.assignVendor(id(taskId, "id"), body?.vendorId ? id(body.vendorId, "vendorId") : null);
+  }
+
+  /** A field agent's own tasks and their vendor's open pool. */
+  @Get("mine")
+  @RequirePermission("field.tasks.perform")
+  @AuditAction("field.tasks.mine")
+  mine(@CurrentAdmin() admin: AdminContext) {
+    return this.service.listForAgent(agentOf(admin));
   }
 
   @Get(":id")
-  get(@Param("id") id: string, @CurrentPortalUser() agent: PortalUserContext) {
-    return this.service.getForAgent(agent, id);
+  @RequirePermission("field.tasks.perform")
+  @AuditAction("field.tasks.read", { resourceType: "FieldTask", resourceParam: "id" })
+  get(@CurrentAdmin() admin: AdminContext, @Param("id") taskId: string) {
+    return this.service.getForAgent(agentOf(admin), id(taskId, "id"));
   }
 
   @Post(":id/accept")
-  accept(@Param("id") id: string, @CurrentPortalUser() agent: PortalUserContext) {
-    return this.service.accept(agent, id);
+  @HttpCode(200)
+  @RequirePermission("field.tasks.perform")
+  @AuditAction("field.tasks.accept", { resourceType: "FieldTask", resourceParam: "id" })
+  accept(@CurrentAdmin() admin: AdminContext, @Param("id") taskId: string) {
+    return this.service.accept(agentOf(admin), id(taskId, "id"));
   }
 
   @Post(":id/reject")
-  reject(
-    @Param("id") id: string,
-    @Body() body: { reason?: string },
-    @CurrentPortalUser() agent: PortalUserContext
-  ) {
-    return this.service.reject(agent, id, body?.reason || "");
+  @HttpCode(200)
+  @RequirePermission("field.tasks.perform")
+  @AuditAction("field.tasks.reject", { resourceType: "FieldTask", resourceParam: "id" })
+  reject(@CurrentAdmin() admin: AdminContext, @Param("id") taskId: string, @Body() body: { reason?: string }) {
+    return this.service.reject(agentOf(admin), id(taskId, "id"), body?.reason || "");
   }
 
   @Post(":id/arrive")
-  arrive(
-    @Param("id") id: string,
-    @Body() body: { latitude?: number; longitude?: number },
-    @CurrentPortalUser() agent: PortalUserContext
-  ) {
-    return this.service.arrive(agent, id, body || {});
+  @HttpCode(200)
+  @RequirePermission("field.tasks.perform")
+  @AuditAction("field.tasks.arrive", { resourceType: "FieldTask", resourceParam: "id" })
+  arrive(@CurrentAdmin() admin: AdminContext, @Param("id") taskId: string, @Body() body: { latitude?: number; longitude?: number }) {
+    return this.service.arrive(agentOf(admin), id(taskId, "id"), body || {});
   }
 
   @Post(":id/submit")
-  submit(
-    @Param("id") id: string,
-    @Body() body: { outcome?: string; notes?: string },
-    @CurrentPortalUser() agent: PortalUserContext
-  ) {
-    return this.service.submit(agent, id, body || {});
+  @HttpCode(200)
+  @RequirePermission("field.tasks.perform")
+  @AuditAction("field.tasks.submit", { resourceType: "FieldTask", resourceParam: "id" })
+  submit(@CurrentAdmin() admin: AdminContext, @Param("id") taskId: string, @Body() body: { outcome?: string; notes?: string }) {
+    return this.service.submit(agentOf(admin), id(taskId, "id"), body || {});
   }
 }

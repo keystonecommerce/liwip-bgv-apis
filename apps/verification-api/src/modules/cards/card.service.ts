@@ -5,11 +5,9 @@ import type { WorkerIdentity } from "../../common/auth/worker-token";
 import { PrismaService } from "../../common/database/prisma.service";
 import type { ApplicationSchema } from "../../domain/verification.types";
 import { issueLiveToken } from "./card-token";
+import { cardStatus } from "./card-views";
 
-const EXPIRING_DAYS = 30;
-const RUNNING = new Set(["PENDING", "QUEUED", "PROCESSING", "MANUAL_REVIEW"]);
-
-export type CardStatus = "valid" | "expiring" | "updating" | "expired" | "suspended";
+export type { CardStatus } from "./card-views";
 
 /** The worker's own Liwip BGV Card: the card so far, or the issued card with its live QR. */
 @Injectable()
@@ -52,12 +50,7 @@ export class CardService {
     if (!card) return { issued: false as const, ...base };
 
     const now = Date.now();
-    const status: CardStatus =
-      card.status !== "ACTIVE" ? "suspended"
-        : card.expiresAt.getTime() <= now ? "expired"
-          : checks.some((check) => RUNNING.has(check.status)) ? "updating"
-            : card.expiresAt.getTime() - now < EXPIRING_DAYS * 86_400_000 ? "expiring"
-              : "valid";
+    const status = cardStatus(card, checks, now);
     const qrOn = status !== "expired" && status !== "suspended";
     const scansLastWeek = await this.prisma.cardScan.count({ where: { cardId: card.id, scannedAt: { gte: new Date(now - 7 * 86_400_000) } } });
     return {
