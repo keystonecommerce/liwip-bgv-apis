@@ -44,6 +44,16 @@ export class FieldTasksController {
     return this.service.assignVendor(id(taskId, "id"), body?.vendorId ? id(body.vendorId, "vendorId") : null);
   }
 
+  /** Keystone only: send a submitted visit back for another one, saying what to check again. */
+  @Post(":id/send-back")
+  @HttpCode(200)
+  @RequirePermission("field.tasks.manage", { allVendors: true })
+  @AuditAction("field.tasks.send_back", { resourceType: "FieldTask", resourceParam: "id" })
+  sendBack(@CurrentAdmin() admin: AdminContext, @Param("id") taskId: string, @Body() body: { note?: string }) {
+    if (admin.scope.kind !== "ALL_VENDORS") throw new ForbiddenException("Only Keystone sends visits back");
+    return this.service.sendBack(id(taskId, "id"), body?.note);
+  }
+
   /** A field agent's own tasks and their vendor's open pool. */
   @Get("mine")
   @RequirePermission("field.tasks.perform")

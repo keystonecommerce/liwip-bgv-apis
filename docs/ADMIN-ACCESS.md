@@ -318,6 +318,8 @@ See [PRICING-AND-PAYMENTS.md §6](PRICING-AND-PAYMENTS.md#6-routes).
 | DELETE | `/v1/admin/vendor-users/:userId` | `vendor.users.manage` | |
 | GET | `/v1/admin/field-tasks` | `field.tasks.read` (all vendors allowed) | `?status=&unassigned=true`; Keystone sees every task, a vendor admin their vendor's |
 | POST | `/v1/admin/field-tasks/:id/vendor` | `field.tasks.manage` | Keystone only: `{ vendorId \| null }` while no agent has accepted it |
+| POST | `/v1/admin/field-tasks/:id/send-back` | `field.tasks.manage` | Keystone only: `{ note }` (5 to 500 characters) for a submitted visit. It goes back to the same agent (or the vendor's pool if none), the arrival is cleared, and the earlier attempt is kept in `previous_attempts`. The check stays in review. |
+| GET | `/v1/admin/review-queue` | `cases.decide` (all partners allowed) | Checks waiting on a reviewer, oldest first, each with a plain `reason` and `ready`. Field visits count as ready once submitted; `?ready=false` lists the ones still waiting, `?type=` one check type. Decide with `POST /v1/admin/cases/:caseId/checks/:checkId/decision`. |
 | GET | `/v1/admin/field-tasks/mine` | `field.tasks.perform` | the agent's tasks and their vendor's open pool: `{ open, available, submitted }` |
 | GET | `/v1/admin/field-tasks/:id` | `field.tasks.perform` | one task the agent may see |
 | POST | `/v1/admin/field-tasks/:id/accept` · `/reject` · `/arrive` · `/submit` | `field.tasks.perform` | `reject { reason }`, `arrive { latitude?, longitude? }`, `submit { outcome, notes? }` |

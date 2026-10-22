@@ -155,6 +155,7 @@ The tables below are generated from `apps/verification-api/src/modules/admin-acc
 - **Each task belongs to the vendor Keystone handed it to** (`POST /v1/admin/field-tasks/:id/vendor`, Keystone only, while no agent has accepted it). Only that vendor's agents see it.
 - **Agents work from their own list** (`GET /v1/admin/field-tasks/mine`) and accept, arrive and submit (`/v1/admin/field-tasks/:id/...`).
 - **Who sees which tasks:** vendor admins see their vendor's tasks (`GET /v1/admin/field-tasks`); Keystone sees every task.
+- **Review:** Keystone decides checks from the review queue (`GET /v1/admin/review-queue`, `cases.decide`) or sends a submitted visit back to the agent with a note (`POST /v1/admin/field-tasks/:id/send-back`, Keystone only).
 
 ## People being verified
 

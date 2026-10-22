@@ -398,6 +398,12 @@ model FieldTask {
   outcome          String?
   notes            String?
   rejectionReason  String?
+  /// Keystone's note when it sends a submitted visit back to the agent for another visit.
+  reviewNote       String?
+  returnedAt       DateTime?
+  returnCount      Int             @default(0)
+  /// Earlier submissions sent back by Keystone: [{ outcome, notes, arrivedAt, location, submittedAt, returnedAt, reviewNote }].
+  history          Json            @default("[]")
   arrivedAt        DateTime?
   arriveLatitude   Float?
   arriveLongitude  Float?

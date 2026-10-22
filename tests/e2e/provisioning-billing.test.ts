@@ -57,6 +57,10 @@ async function staffSession(userId: string): Promise<Staff> {
   assert.equal(response.status, 200, JSON.stringify(response.body));
   return { token, csrf: response.body.csrfToken };
 }
+function ok<T extends { status: number; body: unknown }>(response: T, status = 200): T {
+  assert.equal(response.status, status, JSON.stringify(response.body));
+  return response;
+}
 function as(staff: Staff, method: "get" | "post", path: string) {
   let call = api()[method](path).set("Cookie", `${COOKIE}=${staff.token}`).set("Origin", ORIGIN);
   if (method === "post") call = call.set("x-csrf-token", staff.csrf);
@@ -299,6 +303,56 @@ test("field evidence returns to the same case for QA and does not increase API b
   assert.equal(decision.status, 201); assert.equal(decision.body.status, "VERIFIED"); assert.equal(decision.body.card.status, "ACTIVE");
   assert.equal((await usage()).totalSuccessfulApiCalls, before);
   assert.equal((await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/accept`)).status, 400);
+});
+test("review queue and send-back: Keystone returns a field visit, the agent visits again, then it is decided", async () => {
+  const code = `TEST_SENDBACK_${tag}`.toUpperCase();
+  await db.verificationPackage.create({ data: { id: `pkg_sendback_${tag}`, code, version: 1, name: "Test send-back", checks: [{ type: "CURRENT_ADDRESS", mode: "REQUIRED", execution: "MANUAL" }] } });
+  const created = await createCase(partnerA, code, "Asha Verma");
+  const vendor = await db.vendor.create({ data: { id: `vendor_sb_${tag}`, slug: `vendor-sb-${tag}`, name: "Send-back Vendor" } });
+  const agent = await db.portalUser.create({ data: { id: `agent_sb_${tag}`, email: `agent_sb_${tag}@example.test`, displayName: "Send-back Agent" } });
+  await db.staffRoleBinding.create({ data: { id: `binding_agent_sb_${tag}`, userId: agent.id, roleKey: "FIELD_AGENT", scopeType: "VENDOR", scopeKey: `vendor:${vendor.id}`, vendorId: vendor.id } });
+  const agentSession = await staffSession(agent.id);
+  assert.equal((await as(keystone, "get", "/v1/admin/field-tasks")).status, 200);
+  const task = await db.fieldTask.findFirstOrThrow({ where: { applicationId: created.id } });
+  const check = await db.verification.findUniqueOrThrow({ where: { id: task.verificationId } });
+  const inQueue = async (ready: boolean) => (await as(keystone, "get", `/v1/admin/review-queue?ready=${ready}`)).body.items.find((item: { checkId: string }) => item.checkId === check.id);
+
+  // Waiting for the visit: listed only when asking for everything, and not ready to decide.
+  assert.equal(await inQueue(true), undefined, "not ready before the visit");
+  const waiting = await inQueue(false);
+  assert.equal(waiting.ready, false); assert.equal(waiting.reason, "Waiting for the field visit"); assert.equal(waiting.worker.name, "Asha Verma");
+  assert.equal((await as(agentSession, "get", "/v1/admin/review-queue")).status, 403, "the queue is Keystone's");
+
+  ok(await as(keystone, "post", `/v1/admin/field-tasks/${task.id}/vendor`).send({ vendorId: vendor.id }));
+  ok(await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/accept`));
+  ok(await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/arrive`).send({ latitude: 12.97, longitude: 77.59 }));
+  ok(await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/submit`).send({ outcome: "NEIGHBOUR_CONFIRMED", notes: "Neighbour confirmed, house locked" }));
+  const submitted = await inQueue(true);
+  assert.equal(submitted.ready, true); assert.equal(submitted.reason, "Field visit submitted"); assert.equal(submitted.fieldVisit.vendor.name, "Send-back Vendor");
+
+  // Send it back: only Keystone, only with a note, only once submitted.
+  assert.equal((await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/send-back`).send({ note: "Meet the person themselves" })).status, 403);
+  assert.equal((await as(keystone, "post", `/v1/admin/field-tasks/${task.id}/send-back`).send({ note: "no" })).status, 400);
+  const returned = ok(await as(keystone, "post", `/v1/admin/field-tasks/${task.id}/send-back`).send({ note: "Meet the person themselves, not a neighbour" })).body;
+  assert.equal(returned.status, "ACCEPTED", "back with the same agent");
+  assert.equal(returned.return_count, 1);
+  assert.equal(returned.arrived_at, null, "the next visit records its own arrival");
+  assert.equal(returned.previous_attempts[0].outcome, "NEIGHBOUR_CONFIRMED");
+  assert.equal((await as(keystone, "post", `/v1/admin/field-tasks/${task.id}/send-back`).send({ note: "Again please" })).status, 409, "nothing submitted to send back");
+  const agentView = ok(await as(agentSession, "get", `/v1/admin/field-tasks/${task.id}`)).body;
+  assert.equal(agentView.review_note, "Meet the person themselves, not a neighbour");
+  assert.ok((ok(await as(agentSession, "get", "/v1/admin/field-tasks/mine")).body.open as Array<{ id: string }>).some((item) => item.id === task.id), "in the agent's open list");
+  assert.equal(await inQueue(true), undefined, "not ready while the next visit is pending");
+  assert.equal((await inQueue(false)).reason, "Sent back; waiting for the next visit");
+
+  // The second visit makes it ready again, then Keystone decides.
+  ok(await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/arrive`).send({ latitude: 12.97, longitude: 77.59 }));
+  ok(await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/submit`).send({ outcome: "PERSON_MET", notes: "Met Asha at home" }));
+  const again = await inQueue(true);
+  assert.equal(again.reason, "Field visit submitted again"); assert.equal(again.fieldVisit.timesSentBack, 1);
+  const decided = ok(await as(keystone, "post", `/v1/admin/cases/${created.id}/checks/${check.id}/decision`).send({ decision: "VERIFIED", note: "Met in person" })).body;
+  assert.equal(decided.decision, "VERIFIED");
+  assert.equal(await inQueue(false), undefined, "decided checks leave the queue");
 });
 test("disabled organizations cannot use keys, issue new keys or be silently reactivated", async () => {
   await db.client.update({ where: { id: partnerB.client.id }, data: { status: "INACTIVE" } });
