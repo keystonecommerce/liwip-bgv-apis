@@ -1,7 +1,7 @@
 import { Body, Controller, ForbiddenException, Get, HttpCode, Inject, Param, Post, Query, UseGuards } from "@nestjs/common";
 import { AdminAccessGuard } from "../admin-access/admin-access.guard";
 import { AdminContext, AuditAction, CurrentAdmin, RequirePermission } from "../admin-access/admin-context";
-import { id } from "../admin-panel/input";
+import { id, optionalDate } from "../admin-panel/input";
 import { FieldAgent, FieldTasksService } from "./field-tasks.service";
 
 /** The vendor the request acts for (field.tasks.* are VENDOR permissions). */
@@ -9,6 +9,12 @@ function vendorOf(admin: AdminContext): string | null {
   if (admin.scope.kind === "VENDOR") return admin.scope.vendorId;
   if (admin.scope.kind === "ALL_VENDORS") return null;
   throw new ForbiddenException("No vendor on this request");
+}
+
+/** undefined keeps the current value, null or "" clears it. */
+function nullableId(value: unknown, label: string): string | null | undefined {
+  if (value === undefined) return undefined;
+  return value === null || value === "" ? null : id(value, label);
 }
 
 function agentOf(admin: AdminContext): FieldAgent {
@@ -30,8 +36,33 @@ export class FieldTasksController {
   @Get()
   @RequirePermission("field.tasks.read", { allVendors: true })
   @AuditAction("field.tasks.list")
-  list(@CurrentAdmin() admin: AdminContext, @Query("status") status?: string, @Query("unassigned") unassigned?: string) {
-    return this.service.listForManager(vendorOf(admin), { status: status ? String(status).toUpperCase() : undefined, unassigned: unassigned === "true" });
+  list(@CurrentAdmin() admin: AdminContext, @Query("status") status?: string, @Query("unassigned") unassigned?: string, @Query("view") view?: string) {
+    return this.service.listForManager(vendorOf(admin), { status: status ? String(status).toUpperCase() : undefined, unassigned: unassigned === "true", view: view ? String(view) : undefined });
+  }
+
+  /**
+   * Who does this visit and by when. Keystone: { vendorId?, agentId?, dueAt? }. A vendor admin:
+   * { agentId } for one of their own agents. Omitted fields stay as they are; null clears.
+   */
+  @Post(":id/assign")
+  @HttpCode(200)
+  @RequirePermission("field.tasks.manage", { allVendors: true })
+  @AuditAction("field.tasks.assign", { resourceType: "FieldTask", resourceParam: "id" })
+  assign(@CurrentAdmin() admin: AdminContext, @Param("id") taskId: string, @Body() body: { vendorId?: unknown; agentId?: unknown; dueAt?: unknown }) {
+    const input = { vendorId: nullableId(body?.vendorId, "vendorId"), agentId: nullableId(body?.agentId, "agentId"), dueAt: optionalDate(body?.dueAt, "dueAt") };
+    admin.audit = { ...admin.audit, metadata: { vendorId: input.vendorId, agentId: input.agentId, dueAt: input.dueAt === undefined ? undefined : input.dueAt?.toISOString() ?? null } };
+    return this.service.assign(vendorOf(admin), id(taskId, "id"), input);
+  }
+
+  /** Keystone only: the visit is no longer needed. The check stays in review. */
+  @Post(":id/cancel")
+  @HttpCode(200)
+  @RequirePermission("field.tasks.manage", { allVendors: true })
+  @AuditAction("field.tasks.cancel", { resourceType: "FieldTask", resourceParam: "id" })
+  cancel(@CurrentAdmin() admin: AdminContext, @Param("id") taskId: string, @Body() body: { reason?: string }) {
+    if (admin.scope.kind !== "ALL_VENDORS") throw new ForbiddenException("Only Keystone cancels visits");
+    admin.audit = { ...admin.audit, metadata: { reason: body?.reason } };
+    return this.service.cancel(id(taskId, "id"), body?.reason);
   }
 
   /** Keystone only: which vendor does this visit. { vendorId: null } takes it back. */

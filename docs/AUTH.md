@@ -152,9 +152,11 @@ The tables below are generated from `apps/verification-api/src/modules/admin-acc
 ## Field tasks
 
 - **Field agents use the same staff sign-in** (the `FIELD_AGENT` role at their vendor).
-- **Each task belongs to the vendor Keystone handed it to** (`POST /v1/admin/field-tasks/:id/vendor`, Keystone only, while no agent has accepted it). Only that vendor's agents see it.
+- **Each task belongs to the vendor Keystone handed it to.** Only that vendor's agents see it. Keystone's own field team is a vendor like any other.
+- **Assignment:** Keystone sets the vendor, the agent and the due date (`POST /v1/admin/field-tasks/:id/assign`), and cancels visits (`/cancel`). A vendor admin gives their vendor's tasks to their own agents with the same route; they cannot change the vendor or the due date. Giving a task to someone else starts it over.
+- **Due dates:** a new visit is due `FIELD_TASK_DUE_DAYS` after it is created (default 3). An open task past its due date is overdue (`?view=overdue`).
 - **Agents work from their own list** (`GET /v1/admin/field-tasks/mine`) and accept, arrive and submit (`/v1/admin/field-tasks/:id/...`).
-- **Who sees which tasks:** vendor admins see their vendor's tasks (`GET /v1/admin/field-tasks`); Keystone sees every task.
+- **Who sees which tasks:** vendor admins see their vendor's tasks (`GET /v1/admin/field-tasks`); Keystone sees every task. The list has counts of open, overdue, completed and cancelled tasks.
 - **Review:** Keystone decides checks from the review queue (`GET /v1/admin/review-queue`, `cases.decide`) or sends a submitted visit back to the agent with a note (`POST /v1/admin/field-tasks/:id/send-back`, Keystone only).
 
 ## People being verified

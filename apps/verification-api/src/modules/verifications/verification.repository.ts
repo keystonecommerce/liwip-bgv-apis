@@ -19,6 +19,7 @@ import {
   VerificationType
 } from "../../domain/verification.types";
 import { PrismaService } from "../../common/database/prisma.service";
+import { OPEN_FIELD_TASK_STATUSES } from "../field-tasks/field-tasks.types";
 
 type StoredApplication = {
   apiKeyId?: string | null;
@@ -292,6 +293,11 @@ export class VerificationStore {
       const { cardNumber: assignedCardNumber, workerPhone } = await tx.application.update({ where: { id: applicationId, ...owner }, data: { updatedAt: new Date() }, select: { cardNumber: true, workerPhone: true } });
       const checks = await tx.verification.findMany({ where: { applicationId, application: owner }, select: { status: true, type: true } });
       const status = applicationStatusForChecks(checks.map(check => check.status as VerificationStatus));
+      // A field visit still open for a check decided without it is no longer needed.
+      await tx.fieldTask.updateMany({
+        where: { applicationId, ...owner, status: { in: [...OPEN_FIELD_TASK_STATUSES] }, verification: { status: { not: "MANUAL_REVIEW" } } },
+        data: { status: "CANCELLED", cancelledAt: new Date(), cancelReason: "The check was decided without this visit" }
+      });
       await tx.application.update({ where: { id: applicationId, ...owner }, data: { status } });
       if (workerPhone) {
         // A worker's card is released once every chosen check has finished (none running or in

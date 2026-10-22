@@ -1,17 +1,46 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma, type FieldTask } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../common/database/prisma.service";
 import type { ApplicationSchema } from "../../domain/verification.types";
+import { SYSTEM_ROLES } from "../admin-access/admin-permissions";
 import { VerificationStore } from "../verifications/verification.repository";
 import {
   ArriveInput,
+  AssignFieldTaskInput,
   FIELD_TASK_OUTCOMES,
+  FIELD_TASK_VIEWS,
   FIELD_TASK_VERIFICATION_TYPES,
   FieldTaskOutcome,
+  FieldTaskView,
+  OPEN_FIELD_TASK_STATUSES,
   OUTCOME_RESOLUTION,
   SubmitFieldTaskInput
 } from "./field-tasks.types";
+
+// Vendor roles that can do visits (hold field.tasks.perform there).
+const AGENT_ROLE_KEYS = SYSTEM_ROLES.filter((role) => role.scope === "VENDOR" && role.permissions.includes("field.tasks.perform")).map((role) => role.key);
+
+const MANAGER_INCLUDE = { vendor: { select: { id: true, name: true } }, assignedTo: { select: { id: true, displayName: true } } } satisfies Prisma.FieldTaskInclude;
+type ManagedTask = Prisma.FieldTaskGetPayload<{ include: typeof MANAGER_INCLUDE }>;
+
+const OPEN: Prisma.FieldTaskWhereInput = { status: { in: [...OPEN_FIELD_TASK_STATUSES] } };
+
+function viewWhere(view: FieldTaskView, now: Date): Prisma.FieldTaskWhereInput {
+  if (view === "open") return OPEN;
+  if (view === "overdue") return { ...OPEN, dueAt: { lt: now } };
+  if (view === "completed") return { status: "SUBMITTED" };
+  return { status: "CANCELLED" };
+}
+
+/** When a new visit is due: FIELD_TASK_DUE_DAYS after it is created (default 3). */
+function defaultDueAt(now = new Date()): Date {
+  const days = Number(process.env.FIELD_TASK_DUE_DAYS ?? 3);
+  return new Date(now.getTime() + (Number.isFinite(days) && days > 0 ? days : 3) * 86_400_000);
+}
+
+const isOverdue = (task: FieldTask, now = new Date()) =>
+  Boolean(task.dueAt && task.dueAt < now && (OPEN_FIELD_TASK_STATUSES as readonly string[]).includes(task.status));
 
 /** A field agent acting for one vendor (field.tasks.perform at that vendor). */
 export interface FieldAgent {
@@ -58,6 +87,7 @@ export class FieldTasksService {
           verificationId: verification.id,
           status: "PENDING_ASSIGNMENT",
           taskType: "ADDRESS_VERIFICATION",
+          dueAt: defaultDueAt(),
           workerName,
           addressText
         }
@@ -202,20 +232,99 @@ export class FieldTasksService {
     return { vendorId: agent.vendorId };
   }
 
-  /** Keystone (every vendor) or a vendor admin (their vendor): the task list with its state. */
-  async listForManager(vendorId: string | null, filter: { status?: string; unassigned?: boolean }) {
+  /**
+   * Keystone (every vendor) or a vendor admin (their vendor): the assignment board. `view` picks
+   * open, overdue (open past its due date), completed (submitted) or cancelled tasks; `counts`
+   * has each, plus open tasks with no vendor yet and with no agent yet.
+   */
+  async listForManager(vendorId: string | null, filter: { status?: string; unassigned?: boolean; view?: string }) {
+    const view = filter.view?.toLowerCase();
+    if (view && !(FIELD_TASK_VIEWS as readonly string[]).includes(view)) throw new BadRequestException(`view must be one of ${FIELD_TASK_VIEWS.join(", ")}`);
     await this.syncPendingTasks();
+    const now = new Date();
+    const scope: Prisma.FieldTaskWhereInput = vendorId ? { vendorId } : {};
     const tasks = await this.prisma.fieldTask.findMany({
       where: {
-        ...(vendorId ? { vendorId } : {}),
+        ...scope,
         ...(filter.unassigned ? { vendorId: null } : {}),
-        ...(filter.status ? { status: filter.status } : {})
+        ...(filter.status ? { status: filter.status } : {}),
+        ...(view ? viewWhere(view as FieldTaskView, now) : {})
       },
       orderBy: [{ dueAt: "asc" }, { createdAt: "asc" }],
       take: 500,
-      include: { vendor: { select: { id: true, name: true } }, assignedTo: { select: { id: true, displayName: true } } }
+      include: MANAGER_INCLUDE
     });
-    return { items: tasks.map((task) => ({ ...this.toListItem(task), vendor: task.vendor, agent: task.assignedTo })) };
+    const count = (where: Prisma.FieldTaskWhereInput) => this.prisma.fieldTask.count({ where: { AND: [scope, where] } });
+    const [open, overdue, completed, cancelled, noVendor, noAgent] = await Promise.all([
+      count(viewWhere("open", now)), count(viewWhere("overdue", now)), count(viewWhere("completed", now)), count(viewWhere("cancelled", now)),
+      count({ ...OPEN, vendorId: null }), count({ ...OPEN, assignedToUserId: null })
+    ]);
+    return { counts: { open, overdue, completed, cancelled, noVendor, noAgent }, items: tasks.map((task) => this.toManagerItem(task, now)) };
+  }
+
+  /**
+   * Keystone gives a task to a vendor, an agent at that vendor, or both, and sets its due date
+   * (Keystone's own field team is a vendor like any other). A vendor admin gives their vendor's
+   * tasks to their own agents. Giving a task to someone else starts it over: the new agent
+   * accepts it and records their own arrival. Keystone brings a cancelled task back the same way.
+   * A submitted visit is sent back instead.
+   */
+  async assign(managerVendorId: string | null, taskId: string, input: AssignFieldTaskInput) {
+    const keystone = managerVendorId === null;
+    const task = await this.prisma.fieldTask.findFirst({ where: { id: taskId, ...(keystone ? {} : { vendorId: managerVendorId }) } });
+    if (!task) throw new NotFoundException("Task not found");
+    if (!keystone && (input.vendorId !== undefined || input.dueAt !== undefined)) throw new ForbiddenException("Only Keystone changes the vendor or the due date");
+    if (task.status === "SUBMITTED") throw new ConflictException("This visit is submitted. Send it back for another visit instead.");
+    if (task.status === "CANCELLED" && !keystone) throw new ConflictException("This visit was cancelled");
+
+    const vendorId = input.vendorId === undefined ? task.vendorId : input.vendorId;
+    if (vendorId && vendorId !== task.vendorId) {
+      const vendor = await this.prisma.vendor.findUnique({ where: { id: vendorId }, select: { status: true } });
+      if (!vendor || vendor.status !== "ACTIVE") throw new NotFoundException("Vendor not found or disabled");
+    }
+    // A new vendor means a new agent: the old one no longer sees the task.
+    const agentId = input.agentId !== undefined ? input.agentId : vendorId === task.vendorId ? task.assignedToUserId : null;
+    if (agentId && (agentId !== task.assignedToUserId || vendorId !== task.vendorId)) {
+      if (!vendorId) throw new BadRequestException("Choose the vendor before the agent");
+      await this.assertAgent(vendorId, agentId);
+    }
+    if (input.dueAt && input.dueAt.getTime() <= Date.now()) throw new BadRequestException("The due date must be in the future");
+
+    const moved = task.status === "CANCELLED" || vendorId !== task.vendorId || agentId !== task.assignedToUserId;
+    const changed = await this.prisma.fieldTask.updateMany({
+      where: { id: task.id, status: task.status, vendorId: task.vendorId, assignedToUserId: task.assignedToUserId },
+      data: {
+        vendorId,
+        ...(input.dueAt !== undefined ? { dueAt: input.dueAt } : {}),
+        ...(moved
+          ? {
+              assignedToUserId: agentId, status: agentId ? "ASSIGNED" : "PENDING_ASSIGNMENT", assignedAt: agentId ? new Date() : null,
+              acceptedAt: null, arrivedAt: null, arriveLatitude: null, arriveLongitude: null, rejectionReason: null, cancelledAt: null, cancelReason: null
+            }
+          : {})
+      }
+    });
+    if (!changed.count) throw new ConflictException("This task changed. Reload and try again.");
+    return this.toManagerDetail(await this.prisma.fieldTask.findUniqueOrThrow({ where: { id: task.id }, include: MANAGER_INCLUDE }));
+  }
+
+  /** Keystone cancels a visit that is not submitted. The check stays in review, to decide without it. */
+  async cancel(taskId: string, reasonValue: unknown) {
+    const reason = String(reasonValue ?? "").trim();
+    if (reason.length < 3 || reason.length > 300) throw new BadRequestException("Say why, in 3 to 300 characters");
+    const task = await this.prisma.fieldTask.findUnique({ where: { id: taskId } });
+    if (!task) throw new NotFoundException("Task not found");
+    if (task.status === "CANCELLED") throw new ConflictException("This visit is already cancelled");
+    if (task.status === "SUBMITTED") throw new ConflictException("This visit is submitted. Decide the check or send the visit back.");
+    const changed = await this.prisma.fieldTask.updateMany({ where: { id: task.id, status: task.status }, data: { status: "CANCELLED", cancelledAt: new Date(), cancelReason: reason } });
+    if (!changed.count) throw new ConflictException("This task changed. Reload and try again.");
+    return this.toManagerDetail(await this.prisma.fieldTask.findUniqueOrThrow({ where: { id: task.id }, include: MANAGER_INCLUDE }));
+  }
+
+  // The person must do visits for this vendor, on an active account.
+  private async assertAgent(vendorId: string, userId: string) {
+    const binding = await this.prisma.staffRoleBinding.findFirst({ where: { userId, scopeType: "VENDOR", vendorId, roleKey: { in: AGENT_ROLE_KEYS }, user: { status: "ACTIVE" } }, select: { id: true } });
+    if (!binding) throw new BadRequestException("This person is not an active agent at the vendor");
   }
 
   /** Keystone hands a task to a vendor (or takes it back with null). Only while no agent has accepted it. */
@@ -296,8 +405,17 @@ export class FieldTasksService {
       worker_name: this.maskName(task.workerName),
       address_text: task.addressText,
       due_at: task.dueAt?.toISOString() || null,
+      overdue: isOverdue(task),
       created_at: task.createdAt.toISOString()
     };
+  }
+
+  private toManagerItem(task: ManagedTask, now = new Date()) {
+    return { ...this.toListItem(task), overdue: isOverdue(task, now), vendor: task.vendor, agent: task.assignedTo, assigned_at: task.assignedAt?.toISOString() || null };
+  }
+
+  private toManagerDetail(task: ManagedTask) {
+    return { ...this.toDetail(task), vendor: task.vendor, agent: task.assignedTo };
   }
 
   private toDetail(task: FieldTask) {
@@ -314,6 +432,9 @@ export class FieldTasksService {
           ? { latitude: task.arriveLatitude, longitude: task.arriveLongitude }
           : null,
       submitted_at: task.submittedAt?.toISOString() || null,
+      assigned_at: task.assignedAt?.toISOString() || null,
+      cancelled_at: task.cancelledAt?.toISOString() || null,
+      cancel_reason: task.cancelReason,
       // Set when Keystone sent an earlier submission back: what to check again, and the earlier attempts.
       review_note: task.reviewNote,
       returned_at: task.returnedAt?.toISOString() || null,

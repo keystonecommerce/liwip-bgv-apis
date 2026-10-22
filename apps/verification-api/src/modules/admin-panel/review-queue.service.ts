@@ -16,9 +16,11 @@ const QUEUE_INCLUDE = {
     }
   },
   fieldTask: {
-    select: { id: true, status: true, outcome: true, submittedAt: true, returnCount: true, dueAt: true, vendor: { select: { id: true, name: true } } }
+    select: { id: true, status: true, outcome: true, submittedAt: true, returnCount: true, dueAt: true, cancelReason: true, vendor: { select: { id: true, name: true } } }
   }
 } satisfies Prisma.VerificationInclude;
+
+const READY_TASK_STATUSES = ["SUBMITTED", "CANCELLED"] as const;
 
 type QueueRow = Prisma.VerificationGetPayload<{ include: typeof QUEUE_INCLUDE }>;
 
@@ -27,6 +29,7 @@ function reasonOf(row: QueueRow): string {
   const task = row.fieldTask;
   if (task) {
     if (task.status === "SUBMITTED") return task.returnCount ? "Field visit submitted again" : "Field visit submitted";
+    if (task.status === "CANCELLED") return task.cancelReason ? `Field visit cancelled: ${task.cancelReason}` : "Field visit cancelled";
     return task.returnCount ? "Sent back; waiting for the next visit" : "Waiting for the field visit";
   }
   const result = (row.result ?? {}) as { reason?: unknown };
@@ -36,7 +39,8 @@ function reasonOf(row: QueueRow): string {
 
 /**
  * Checks waiting on a Keystone reviewer, oldest first: field visits, court matches and anything
- * else in review. A field visit is ready to decide only once the agent has submitted it.
+ * else in review. A field visit is ready to decide once the agent has submitted it, or once
+ * Keystone has cancelled it and the check is decided without it.
  */
 @Injectable()
 export class ReviewQueueService {
@@ -50,7 +54,7 @@ export class ReviewQueueService {
         status: "MANUAL_REVIEW",
         application: { status: { not: "ARCHIVED" } },
         ...(type ? { type } : {}),
-        ...(readyOnly ? { OR: [{ fieldTask: { is: null } }, { fieldTask: { is: { status: "SUBMITTED" } } }] } : {})
+        ...(readyOnly ? { OR: [{ fieldTask: { is: null } }, { fieldTask: { is: { status: { in: [...READY_TASK_STATUSES] } } } }] } : {})
       },
       include: QUEUE_INCLUDE,
       orderBy: { updatedAt: "asc" },
@@ -66,7 +70,7 @@ export class ReviewQueueService {
         partner: row.application.tenant,
         program: row.application.client,
         reason: reasonOf(row),
-        ready: !row.fieldTask || row.fieldTask.status === "SUBMITTED",
+        ready: !row.fieldTask || (READY_TASK_STATUSES as readonly string[]).includes(row.fieldTask.status),
         inReviewSince: row.updatedAt.toISOString(),
         fieldVisit: row.fieldTask
           ? {

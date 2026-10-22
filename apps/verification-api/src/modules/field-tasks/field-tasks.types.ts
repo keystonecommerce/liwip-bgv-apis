@@ -11,6 +11,13 @@ export const FIELD_TASK_STATUSES = [
 ] as const;
 export type FieldTaskStatus = (typeof FIELD_TASK_STATUSES)[number];
 
+// Still waiting on a visit. SUBMITTED and CANCELLED tasks are closed.
+export const OPEN_FIELD_TASK_STATUSES = ["PENDING_ASSIGNMENT", "ASSIGNED", "ACCEPTED", "IN_PROGRESS"] as const;
+
+// The assignment board's views: open, open past the due date, submitted, cancelled.
+export const FIELD_TASK_VIEWS = ["open", "overdue", "completed", "cancelled"] as const;
+export type FieldTaskView = (typeof FIELD_TASK_VIEWS)[number];
+
 // Structured field outcomes from PRD section 14.2.
 export const FIELD_TASK_OUTCOMES = [
   "PERSON_MET",
@@ -41,6 +48,13 @@ export const FIELD_TASK_VERIFICATION_TYPES = ["CURRENT_ADDRESS"] as const;
 export interface SubmitFieldTaskInput {
   outcome?: string;
   notes?: string;
+}
+
+// undefined keeps the current value, null clears it.
+export interface AssignFieldTaskInput {
+  vendorId?: string | null;
+  agentId?: string | null;
+  dueAt?: Date | null;
 }
 
 export interface ArriveInput {
