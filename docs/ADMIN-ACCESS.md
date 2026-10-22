@@ -324,7 +324,11 @@ See [PRICING-AND-PAYMENTS.md §6](PRICING-AND-PAYMENTS.md#6-routes).
 | GET | `/v1/admin/review-queue` | `cases.decide` (all partners allowed) | Checks waiting on a reviewer, oldest first, each with a plain `reason` and `ready`. Field visits count as ready once submitted; `?ready=false` lists the ones still waiting, `?type=` one check type. Decide with `POST /v1/admin/cases/:caseId/checks/:checkId/decision`. |
 | GET | `/v1/admin/field-tasks/mine` | `field.tasks.perform` | the agent's tasks and their vendor's open pool: `{ open, available, submitted }` |
 | GET | `/v1/admin/field-tasks/:id` | `field.tasks.perform` | one task the agent may see |
-| POST | `/v1/admin/field-tasks/:id/accept` · `/reject` · `/arrive` · `/submit` | `field.tasks.perform` | `reject { reason }`, `arrive { latitude?, longitude? }`, `submit { outcome, notes? }` |
+| POST | `/v1/admin/field-tasks/:id/accept` · `/reject` · `/arrive` · `/submit` | `field.tasks.perform` | `reject { reason }`, `arrive { latitude?, longitude? }`, `submit { outcome, notes? }`. A final outcome needs a photo on this visit, and `PERSON_MET` or `FAMILY_MET` a signature too; the submission records them on the check. |
+| POST | `/v1/admin/field-tasks/:id/evidence` | `field.tasks.perform` | The agent's open visit (accepted or arrived). Multipart: `file` (JPEG, PNG or WebP, up to 10 MB, checked by its bytes), `kind` `PHOTO` \| `SIGNATURE`, `latitude` and `longitude` (required for a photo), `capturedAt?`. Up to 20 per visit. `201` with the evidence item. |
+| DELETE | `/v1/admin/field-tasks/:id/evidence/:evidenceId` | `field.tasks.perform` | Removes one of the agent's items from the visit in progress. |
+| GET | `/v1/admin/field-tasks/:id/evidence` | `field.tasks.read` (all vendors allowed) | Keystone, the vendor's admin, or the task's agent. `{ items: [{ id, kind, content_type, size_bytes, captured_at, location, uploaded_at, uploaded_by, current, file_url }] }`; `current` is false for attempts that were sent back. |
+| GET | `/v1/admin/field-tasks/:id/evidence/:evidenceId/file` | `field.tasks.read` (all vendors allowed) | The image itself, same access as the list. |
 
 ### Cards
 

@@ -1,7 +1,10 @@
-import { Body, Controller, ForbiddenException, Get, HttpCode, Inject, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, ForbiddenException, Get, HttpCode, Inject, Param, Post, Query, Res, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
+import type { Response } from "express";
 import { AdminAccessGuard } from "../admin-access/admin-access.guard";
 import { AdminContext, AuditAction, CurrentAdmin, RequirePermission } from "../admin-access/admin-context";
 import { id, optionalDate } from "../admin-panel/input";
+import { EvidenceUpload, EvidenceViewer, FieldEvidenceService, MAX_EVIDENCE_BYTES } from "./field-evidence.service";
 import { FieldAgent, FieldTasksService } from "./field-tasks.service";
 
 /** The vendor the request acts for (field.tasks.* are VENDOR permissions). */
@@ -15,6 +18,10 @@ function vendorOf(admin: AdminContext): string | null {
 function nullableId(value: unknown, label: string): string | null | undefined {
   if (value === undefined) return undefined;
   return value === null || value === "" ? null : id(value, label);
+}
+
+function viewerOf(admin: AdminContext): EvidenceViewer {
+  return { vendorId: vendorOf(admin), userId: admin.user.id, manager: admin.permissions.has("field.tasks.manage") };
 }
 
 function agentOf(admin: AdminContext): FieldAgent {
@@ -31,7 +38,10 @@ function agentOf(admin: AdminContext): FieldAgent {
 @Controller("v1/admin/field-tasks")
 @UseGuards(AdminAccessGuard)
 export class FieldTasksController {
-  constructor(@Inject(FieldTasksService) private readonly service: FieldTasksService) {}
+  constructor(
+    @Inject(FieldTasksService) private readonly service: FieldTasksService,
+    @Inject(FieldEvidenceService) private readonly evidence: FieldEvidenceService
+  ) {}
 
   @Get()
   @RequirePermission("field.tasks.read", { allVendors: true })
@@ -122,6 +132,42 @@ export class FieldTasksController {
   @AuditAction("field.tasks.arrive", { resourceType: "FieldTask", resourceParam: "id" })
   arrive(@CurrentAdmin() admin: AdminContext, @Param("id") taskId: string, @Body() body: { latitude?: number; longitude?: number }) {
     return this.service.arrive(agentOf(admin), id(taskId, "id"), body || {});
+  }
+
+  /** A photo (with latitude and longitude) or a signature, as multipart `file` plus `kind`. */
+  @Post(":id/evidence")
+  @HttpCode(201)
+  @RequirePermission("field.tasks.perform")
+  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: MAX_EVIDENCE_BYTES, files: 1 } }))
+  @AuditAction("field.tasks.evidence.add", { resourceType: "FieldTask", resourceParam: "id" })
+  addEvidence(@CurrentAdmin() admin: AdminContext, @Param("id") taskId: string, @Body() body: Record<string, unknown>, @UploadedFile() file: EvidenceUpload | undefined) {
+    return this.evidence.upload(agentOf(admin), id(taskId, "id"), body || {}, file);
+  }
+
+  @Delete(":id/evidence/:evidenceId")
+  @RequirePermission("field.tasks.perform")
+  @AuditAction("field.tasks.evidence.remove", { resourceType: "FieldTask", resourceParam: "id" })
+  removeEvidence(@CurrentAdmin() admin: AdminContext, @Param("id") taskId: string, @Param("evidenceId") evidenceId: string) {
+    return this.evidence.remove(agentOf(admin), id(taskId, "id"), id(evidenceId, "evidenceId"));
+  }
+
+  /** Keystone, the vendor's admin, or the task's agent. */
+  @Get(":id/evidence")
+  @RequirePermission("field.tasks.read", { allVendors: true })
+  @AuditAction("field.tasks.evidence.list", { resourceType: "FieldTask", resourceParam: "id" })
+  listEvidence(@CurrentAdmin() admin: AdminContext, @Param("id") taskId: string) {
+    return this.evidence.list(viewerOf(admin), id(taskId, "id"));
+  }
+
+  @Get(":id/evidence/:evidenceId/file")
+  @RequirePermission("field.tasks.read", { allVendors: true })
+  @AuditAction("field.tasks.evidence.read", { resourceType: "FieldTask", resourceParam: "id" })
+  async evidenceFile(@CurrentAdmin() admin: AdminContext, @Param("id") taskId: string, @Param("evidenceId") evidenceId: string, @Res() res: Response) {
+    const file = await this.evidence.file(viewerOf(admin), id(taskId, "id"), id(evidenceId, "evidenceId"));
+    res.setHeader("Content-Type", file.contentType);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.send(file.bytes);
   }
 
   @Post(":id/submit")

@@ -42,6 +42,10 @@ export const OUTCOME_RESOLUTION: Record<FieldTaskOutcome, "VERIFIED" | "FAILED" 
   REVISIT_REQUIRED: "REVISIT"
 };
 
+// What an agent adds to a visit: photos (with GPS) and the signature of the person met.
+export const EVIDENCE_KINDS = ["PHOTO", "SIGNATURE"] as const;
+export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
+
 // Verification types that produce a physical field-visit task.
 export const FIELD_TASK_VERIFICATION_TYPES = ["CURRENT_ADDRESS"] as const;
 
