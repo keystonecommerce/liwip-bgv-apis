@@ -17,6 +17,9 @@ import { VerificationStore } from "../../apps/verification-api/src/modules/verif
 import { withTenantScope } from "../../apps/verification-api/src/common/database/tenant-prisma";
 import { PartnerProvisioning } from "../../apps/verification-api/src/common/security/partner-provisioning";
 import { provisionPlatformAdmin } from "../../apps/verification-api/src/modules/admin-access/bootstrap";
+import { issueWorkerToken } from "../../apps/verification-api/src/common/auth/worker-token";
+import { DEFAULT_ENABLED_PRODUCTS } from "../../apps/verification-api/src/integrations/surepass/products";
+import { AadhaarMasker } from "../../apps/verification-api/src/modules/document-storage/aadhaar-masker";
 
 let app: INestApplication, db: PrismaClient;
 const { createSurepassMock } = require(resolve(process.cwd(), "tools/surepass-mock/server.cjs"));
@@ -521,6 +524,74 @@ test("field evidence: photos with GPS and a signature, required to submit, seen 
   assert.match((await submit("ADDRESS_EXISTS")).body.message, /photo/);
   ok(await addEvidence(agent.session, task.id, "PHOTO"), 201);
   ok(await submit("ADDRESS_EXISTS"));
+});
+test("document photos: a chosen check's card is read to pre-fill its details, nothing is stored, and each read is on the ledger", async () => {
+  const workerApp = await new PartnerProvisioning(db).createPartner({ tenantSlug: `ocr-app-${tag.toLowerCase()}`, tenantName: "OCR app", clientCode: "WORKER_PORTAL", clientName: "OCR worker app", scopes: ["worker:cases"] });
+  const token = issueWorkerToken({ tenantId: workerApp.tenant.id, clientId: workerApp.client.id, phone: `9198${String(Date.now()).slice(-8)}` }).token;
+  const worker = (method: "get" | "post" | "put", path: string) => api()[method](`/v1/worker/case${path}`).set("x-api-key", workerApp.rawKey).set("x-worker-token", token);
+  const read = (kind: string, photos: Array<[string, Buffer, string]>) => photos.reduce((call, [field, bytes, type]) => call.attach(field, bytes, { filename: `${field}.jpg`, contentType: type }), worker("post", `/checks/${kind}/read`));
+  const front: [string, Buffer, string] = ["front", JPEG, "image/jpeg"], back: [string, Buffer, string] = ["back", JPEG, "image/jpeg"];
+  const previous = process.env.SUREPASS_ENABLED_PRODUCTS;
+  process.env.SUREPASS_ENABLED_PRODUCTS = [...DEFAULT_ENABLED_PRODUCTS, "ocr-pan", "ocr-license"].join(",");
+  try {
+    const opened = ok(await worker("get", "")).body;
+    ok(await worker("put", "/name").send({ fullName: "Test Worker" }));
+    const chosen = ok(await worker("put", "/checks").send({ checks: ["PAN", "DRIVING_LICENSE"] })).body;
+    const readable = Object.fromEntries(chosen.catalog.map((item: { check: string; readable: boolean }) => [item.check, item.readable]));
+    assert.equal(readable.PAN, true); assert.equal(readable.DRIVING_LICENSE, true); assert.equal(readable.PASSPORT, false, "passport OCR is not enabled here");
+    assert.equal((await read("PAN", [front])).status, 400, "consent first");
+    await db.prepaidCase.create({ data: { applicationId: opened.applicationId, tenantId: workerApp.tenant.id, source: "ORDER", packageCode: "TEST", packageVersion: 1, coveredChecks: ["AADHAAR", "PAN", "DRIVING_LICENSE"] } });
+    ok(await worker("post", "/consent").send({ textVersion: "test-1", items: ["case", "identity"] }));
+
+    // Only images or PDFs that are what they say; the licence needs both sides.
+    assert.equal((await read("VOTER_ID", [front])).status, 400, "no photo reading for this check");
+    assert.equal((await read("PASSPORT", [front])).status, 503);
+    assert.equal((await read("PAN", [])).status, 400);
+    assert.equal((await read("PAN", [["front", Buffer.from("not an image"), "image/jpeg"]])).status, 400);
+    assert.equal((await read("DRIVING_LICENSE", [front])).status, 400);
+
+    const before = await db.providerCall.count({ where: { applicationId: opened.applicationId } });
+    const pan = ok(await read("PAN", [front])).body;
+    assert.deepEqual(pan.fields, { panNumber: "ABCPD1234E" });
+    assert.deepEqual(pan.details, { name: "Test Worker", fatherName: "Suresh Kumar", dateOfBirth: "1994-08-15" });
+    assert.equal(pan.nameMatchesAadhaar, true);
+    const licence = ok(await read("DRIVING_LICENSE", [front, back])).body;
+    assert.deepEqual(licence.fields, { licenceNumber: "KA0120190001234", dateOfBirth: "1994-08-15" });
+    assert.deepEqual(licence.lowConfidence, ["dateOfBirth"]);
+    const calls = await db.providerCall.findMany({ where: { applicationId: opened.applicationId }, select: { operation: true, state: true } });
+    assert.equal(calls.length, before + 2); assert.ok(calls.every((call) => call.state === "SUCCESS"));
+    assert.equal(await db.applicationDocument.count({ where: { applicationId: opened.applicationId } }), 0, "the photos are not kept");
+
+    // Once the check has run its card is not read again.
+    await db.verification.updateMany({ where: { applicationId: opened.applicationId, type: "PAN" }, data: { status: "VERIFIED" } });
+    assert.equal((await read("PAN", [front])).status, 409, "a check already done is not read again");
+
+    // With the product switched off the app is told to type instead.
+    process.env.SUREPASS_ENABLED_PRODUCTS = DEFAULT_ENABLED_PRODUCTS.join(",");
+    assert.equal((await read("DRIVING_LICENSE", [front, back])).status, 503);
+    assert.equal(ok(await worker("get", "")).body.catalog.find((item: { check: string }) => item.check === "DRIVING_LICENSE").readable, false);
+  } finally {
+    if (previous === undefined) delete process.env.SUREPASS_ENABLED_PRODUCTS; else process.env.SUREPASS_ENABLED_PRODUCTS = previous;
+  }
+});
+test("Aadhaar masking goes through Surepass on the case's ledger and returns the masked image", async () => {
+  const created = await createCase(partnerA);
+  const previous = { products: process.env.SUREPASS_ENABLED_PRODUCTS, hosts: process.env.SUREPASS_MASKED_IMAGE_HOSTS };
+  process.env.SUREPASS_ENABLED_PRODUCTS = [...DEFAULT_ENABLED_PRODUCTS, "ocr-aadhaar-masking"].join(",");
+  process.env.SUREPASS_MASKED_IMAGE_HOSTS = "127.0.0.1";
+  try {
+    const masker = app.get(AadhaarMasker);
+    const masked = await masker.mask({ buffer: JPEG, originalname: "aadhaar.jpg", mimetype: "image/jpeg" }, { tenantId: partnerA.tenant.id, clientId: partnerA.client.id, applicationId: created.id, documentId: `doc_mask_${tag}` });
+    assert.equal(masked.contentType, "image/jpeg"); assert.ok(masked.bytes.length > 0);
+    const call = await db.providerCall.findFirstOrThrow({ where: { operationKey: { startsWith: `aadhaar_mask_doc_mask_${tag}` } } });
+    assert.equal(call.applicationId, created.id); assert.equal(call.state, "SUCCESS");
+    process.env.SUREPASS_MASKED_IMAGE_HOSTS = "amazonaws.com";
+    await assert.rejects(masker.mask({ buffer: JPEG, originalname: "aadhaar.jpg", mimetype: "image/jpeg" }, { tenantId: partnerA.tenant.id, clientId: partnerA.client.id, applicationId: created.id, documentId: `doc_mask2_${tag}` }), { status: 503 }, "only Surepass's own hosts");
+  } finally {
+    for (const [key, value] of [["SUREPASS_ENABLED_PRODUCTS", previous.products], ["SUREPASS_MASKED_IMAGE_HOSTS", previous.hosts]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 });
 test("disabled organizations cannot use keys, issue new keys or be silently reactivated", async () => {
   await db.client.update({ where: { id: partnerB.client.id }, data: { status: "INACTIVE" } });

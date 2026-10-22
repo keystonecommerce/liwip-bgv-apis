@@ -27,7 +27,7 @@ export class SupportService {
     // The worker's own limits (keyed by tenant, client and phone) start fresh too.
     const owners = await this.prisma.application.findMany({ where: { workerPhone: phone, ...scope }, select: { tenantId: true, clientId: true }, distinct: ["tenantId", "clientId"] });
     for (const owner of owners) {
-      await this.limits.clear(["aadhaarPerWorker", "checkPerWorkerHour", "checkPerWorkerDay", "passkeySetupPerWorker", "caseEditsPerWorker"], `${owner.tenantId}:${owner.clientId}:${phone}`);
+      await this.limits.clear(["aadhaarPerWorker", "checkPerWorkerHour", "checkPerWorkerDay", "passkeySetupPerWorker", "caseEditsPerWorker", "documentReadsPerWorkerHour"], `${owner.tenantId}:${owner.clientId}:${phone}`);
     }
     return this.prisma.$transaction(async (tx) => {
       const cases = await tx.application.updateMany({ where: { workerPhone: phone, ...scope }, data: { workerPhone: archivedAs, status: "ARCHIVED" } });

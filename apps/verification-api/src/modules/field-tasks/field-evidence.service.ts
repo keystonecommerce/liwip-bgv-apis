@@ -2,6 +2,7 @@ import { BadRequestException, Inject, Injectable, NotFoundException } from "@nes
 import type { FieldEvidence, FieldTask } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../common/database/prisma.service";
+import { checkedFileType } from "../../domain/file-types";
 import { FieldEvidenceStorage } from "./field-evidence.storage";
 import { EVIDENCE_KINDS, EvidenceKind, FieldTaskOutcome, OUTCOME_RESOLUTION } from "./field-tasks.types";
 
@@ -11,11 +12,7 @@ export const MAX_EVIDENCE_BYTES = 10 * 1024 * 1024;
 const MAX_EVIDENCE_PER_VISIT = 20;
 
 // Images only, checked by their first bytes as well as the declared type.
-const IMAGE_SIGNATURES: Record<string, (bytes: Buffer) => boolean> = {
-  "image/jpeg": (bytes) => bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff,
-  "image/png": (bytes) => bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
-  "image/webp": (bytes) => bytes.subarray(0, 4).toString("latin1") === "RIFF" && bytes.subarray(8, 12).toString("latin1") === "WEBP"
-};
+const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
 
 // Outcomes where someone was met and signs for the visit.
 const SIGNED_OUTCOMES: readonly FieldTaskOutcome[] = ["PERSON_MET", "FAMILY_MET"];
@@ -39,9 +36,8 @@ export class FieldEvidenceService {
     const task = await this.agentTask(agent, taskId);
     const kind = String(input.kind ?? "").trim().toUpperCase() as EvidenceKind;
     if (!EVIDENCE_KINDS.includes(kind)) throw new BadRequestException(`kind must be one of ${EVIDENCE_KINDS.join(", ")}`);
-    const contentType = String(file?.mimetype || "").toLowerCase();
-    const sniff = IMAGE_SIGNATURES[contentType];
-    if (!file || !sniff || !sniff(file.buffer) || file.size > MAX_EVIDENCE_BYTES) throw new BadRequestException("Add a JPEG, PNG or WebP image up to 10 MB");
+    const contentType = file ? checkedFileType(file.buffer, file.mimetype, IMAGE_TYPES) : null;
+    if (!file || !contentType || file.size > MAX_EVIDENCE_BYTES) throw new BadRequestException("Add a JPEG, PNG or WebP image up to 10 MB");
     const latitude = coordinate(input.latitude, "latitude", 90);
     const longitude = coordinate(input.longitude, "longitude", 180);
     if ((latitude === null) !== (longitude === null)) throw new BadRequestException("Send both latitude and longitude");

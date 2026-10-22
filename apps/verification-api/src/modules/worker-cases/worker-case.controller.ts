@@ -1,5 +1,5 @@
-import { BadRequestException, Body, Controller, Get, HttpCode, Inject, Param, Post, Put, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
-import { FileInterceptor } from "@nestjs/platform-express";
+import { BadRequestException, Body, Controller, Get, HttpCode, Inject, Param, Post, Put, UploadedFile, UploadedFiles, UseGuards, UseInterceptors } from "@nestjs/common";
+import { FileFieldsInterceptor, FileInterceptor } from "@nestjs/platform-express";
 import { ApiKeyGuard } from "../../common/auth/api-key.guard";
 import { ClientContext, CurrentClient } from "../../common/auth/client-context";
 import { ScopeGuard } from "../../common/auth/scope.guard";
@@ -7,8 +7,9 @@ import { RequireScopes } from "../../common/auth/scopes";
 import { CurrentWorker, WorkerGuard } from "../../common/auth/worker.guard";
 import type { WorkerIdentity } from "../../common/auth/worker-token";
 import { LimitName, RateLimitService } from "../../common/security/rate-limit.service";
+import { isReadableKind } from "./document-reading";
 import { isWorkerCheckKind } from "./worker-case.inputs";
-import { DetailsInput, SelfieUpload, WorkerCaseService } from "./worker-case.service";
+import { DetailsInput, DocumentPhoto, SelfieUpload, WorkerCaseService } from "./worker-case.service";
 
 /**
  * A worker's own case. Needs the platform API key and the worker token from OTP
@@ -89,6 +90,25 @@ export class WorkerCaseController {
   @HttpCode(200)
   completeAadhaar(@CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
     return this.cases.completeAadhaar(worker, client);
+  }
+
+  /**
+   * A photo of the document for a chosen check (`front`, and `back` for the licence): what it
+   * says, to pre-fill the details. Each read is a paid provider call. The photo is not stored.
+   */
+  @Post("checks/:kind/read")
+  @HttpCode(200)
+  @UseInterceptors(FileFieldsInterceptor([{ name: "front", maxCount: 1 }, { name: "back", maxCount: 1 }], { limits: { fileSize: 5 * 1024 * 1024, files: 2 } }))
+  async readDocument(
+    @Param("kind") kind: string,
+    @UploadedFiles() photos: { front?: DocumentPhoto[]; back?: DocumentPhoto[] } | undefined,
+    @CurrentWorker() worker: WorkerIdentity,
+    @CurrentClient() client: ClientContext
+  ) {
+    const normalised = String(kind || "").toUpperCase().replace(/-/g, "_");
+    if (!isReadableKind(normalised)) throw new BadRequestException("This check has no document photo to read");
+    await this.limit(worker, "documentReadsPerWorkerHour");
+    return this.cases.readDocument(worker, client, normalised, { front: photos?.front?.[0], back: photos?.back?.[0] });
   }
 
   @Post("checks/:kind")
