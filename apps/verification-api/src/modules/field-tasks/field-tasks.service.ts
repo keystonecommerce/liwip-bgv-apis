@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
-import type { FieldTask } from "@prisma/client";
+import { Prisma, type FieldTask } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../common/database/prisma.service";
 import type { ApplicationSchema } from "../../domain/verification.types";
@@ -233,6 +233,46 @@ export class FieldTasksService {
     return this.toDetail(await this.prisma.fieldTask.findUniqueOrThrow({ where: { id: taskId } }));
   }
 
+  /**
+   * Keystone sends a submitted visit back for another one: to the same agent when they still
+   * have it, else back to the vendor's pool. The earlier attempt is kept in the task's history,
+   * the arrival is cleared so the next visit records its own, and the check stays in review.
+   */
+  async sendBack(taskId: string, noteValue: unknown) {
+    const note = String(noteValue ?? "").trim();
+    if (note.length < 5 || note.length > 500) throw new BadRequestException("Say what to check again, in 5 to 500 characters");
+    const task = await this.prisma.fieldTask.findUnique({ where: { id: taskId } });
+    if (!task) throw new NotFoundException("Task not found");
+    if (task.status !== "SUBMITTED") throw new ConflictException("Only a submitted visit can be sent back");
+    const now = new Date();
+    const attempt = {
+      outcome: task.outcome,
+      notes: task.notes,
+      arrivedAt: task.arrivedAt?.toISOString() ?? null,
+      location: task.arriveLatitude != null && task.arriveLongitude != null ? { latitude: task.arriveLatitude, longitude: task.arriveLongitude } : null,
+      submittedAt: task.submittedAt?.toISOString() ?? null,
+      returnedAt: now.toISOString(),
+      reviewNote: note
+    };
+    const history = [...(Array.isArray(task.history) ? (task.history as Prisma.JsonArray) : []), attempt];
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const changed = await tx.fieldTask.updateMany({
+        where: { id: task.id, status: "SUBMITTED" },
+        data: {
+          status: task.assignedToUserId ? "ACCEPTED" : "PENDING_ASSIGNMENT",
+          outcome: null, notes: null, submittedAt: null, arrivedAt: null, arriveLatitude: null, arriveLongitude: null,
+          reviewNote: note, returnedAt: now, returnCount: { increment: 1 }, history: history as Prisma.InputJsonValue
+        }
+      });
+      if (!changed.count) throw new ConflictException("This visit changed. Reload and try again.");
+      // The check waits for the next visit: still in review, but no longer ready to decide.
+      await tx.verification.update({ where: { id: task.verificationId }, data: { result: { source: "field-visit", awaitingRevisit: true, reviewNote: note }, completedAt: null } });
+      return tx.fieldTask.findUniqueOrThrow({ where: { id: task.id } });
+    });
+    await this.verifications.recalculateApplicationStatus(task.applicationId, { tenantId: task.tenantId, clientId: task.clientId });
+    return this.toDetail(updated);
+  }
+
   private coordinate(value: number | undefined, label: string, bound: number): number | null {
     if (value === undefined || value === null) return null;
     const numeric = Number(value);
@@ -273,7 +313,12 @@ export class FieldTasksService {
         task.arriveLatitude != null && task.arriveLongitude != null
           ? { latitude: task.arriveLatitude, longitude: task.arriveLongitude }
           : null,
-      submitted_at: task.submittedAt?.toISOString() || null
+      submitted_at: task.submittedAt?.toISOString() || null,
+      // Set when Keystone sent an earlier submission back: what to check again, and the earlier attempts.
+      review_note: task.reviewNote,
+      returned_at: task.returnedAt?.toISOString() || null,
+      return_count: task.returnCount,
+      previous_attempts: Array.isArray(task.history) ? task.history : []
     };
   }
 }

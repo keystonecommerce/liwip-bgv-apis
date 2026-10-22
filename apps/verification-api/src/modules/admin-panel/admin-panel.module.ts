@@ -18,6 +18,8 @@ import {
   VendorUsersController
 } from "./management.controller";
 import { PartnersService } from "./partners.service";
+import { ReviewQueueController } from "./review-queue.controller";
+import { ReviewQueueService } from "./review-queue.service";
 import { StaffDirectoryService } from "./staff-directory.service";
 import { SupportController } from "./support.controller";
 import { SupportService } from "./support.service";
@@ -28,8 +30,8 @@ import { SupportService } from "./support.service";
   controllers: [
     PartnersController, VendorsController, StaffController, OrganisationController, PartnerUsersController, VendorUsersController,
     AdminAuditLogsController, AdminUsageController, CasesController, CardLookupController, VerifiersController,
-    ApiKeysController, SupportController
+    ApiKeysController, SupportController, ReviewQueueController
   ],
-  providers: [PartnersService, StaffDirectoryService, CasesService, CardLookupService, ApiKeysService, SupportService]
+  providers: [PartnersService, StaffDirectoryService, CasesService, CardLookupService, ApiKeysService, SupportService, ReviewQueueService]
 })
 export class AdminPanelModule {}
