@@ -46,7 +46,7 @@ export function recentSignInMs(): number {
  * verifiers use the business portal. ADMIN_PANEL_URL is the fallback for both.
  */
 export function panelUrl(app: "control" | "business"): string {
-  const fallback = process.env.ADMIN_PANEL_URL?.trim() || "http://localhost:5173";
+  const fallback = process.env.ADMIN_PANEL_URL?.trim() || "http://localhost:4312";
   const url = (app === "control" ? process.env.ADMIN_CONTROL_URL : process.env.ADMIN_BUSINESS_URL)?.trim() || fallback;
   return url.replace(/\/+$/, "");
 }

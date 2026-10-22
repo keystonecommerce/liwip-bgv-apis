@@ -14,9 +14,9 @@ export const billingConfig = () => ({
   orderMinutes: 30,
   inviteDays: Number(process.env.INVITE_VALID_DAYS || 30),
   /** Where invite links land: the Liwip app. */
-  workerAppUrl: (process.env.WORKER_APP_URL || "http://localhost:3005").replace(/\/+$/, ""),
+  workerAppUrl: (process.env.WORKER_APP_URL || "http://localhost:4311").replace(/\/+$/, ""),
   /** Public base for invite links, e.g. https://liwip.in. */
-  inviteLinkBase: (process.env.INVITE_LINK_BASE || "http://localhost:3001").replace(/\/+$/, ""),
+  inviteLinkBase: (process.env.INVITE_LINK_BASE || "http://localhost:4310").replace(/\/+$/, ""),
   /**
    * Checks before this instant are never billed as API usage. Unset: usage is not rated at all,
    * so turning billing on never back-bills a partner's history.

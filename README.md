@@ -4,7 +4,7 @@ The Liwip background-verification API (NestJS, Prisma on Postgres, BullMQ on Red
 
 ## Run it
 
-On the VM, `liwip-bgv setup` then `liwip-bgv start` runs the database, Redis, this API (port 3011) and the apps; see `~/dev/liwip-bgv/README.md`. On its own:
+On the VM, `liwip-bgv setup` then `liwip-bgv start` runs the database, Redis, this API (port 4310) and the apps; see `~/dev/liwip-bgv/README.md`. On its own:
 
 ```bash
 npm install

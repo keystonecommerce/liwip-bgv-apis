@@ -2,7 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { createHash } from "node:crypto";
 
 const prisma = new PrismaClient();
-const apiBaseUrl = process.env.VERIFICATION_API_URL || "http://localhost:3001";
+const apiBaseUrl = process.env.VERIFICATION_API_URL || "http://localhost:4310";
 const apiKey = process.env.DEV_PLATFORM_API_KEY || "dev-gig-platform-key-change-me";
 
 const pdf = Buffer.from([

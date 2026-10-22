@@ -1,7 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
-const apiBaseUrl = process.env.VERIFICATION_API_URL || "http://localhost:3001";
+const apiBaseUrl = process.env.VERIFICATION_API_URL || "http://localhost:4310";
 const firstApiKey = process.env.DEV_PLATFORM_API_KEY || "dev-gig-platform-key-change-me";
 const secondApiKey = process.env.DEV_SECOND_PLATFORM_API_KEY || "dev-partner-platform-key-change-me";
 
