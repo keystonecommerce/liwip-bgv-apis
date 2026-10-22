@@ -4,13 +4,14 @@ import { isoDate } from "../../domain/dates";
 export { isoDate };
 
 /** Checks a worker submits input for. FACE runs liveness and face match together. */
-export type WorkerCheckKind = "PAN" | "DRIVING_LICENSE" | "RC_V2" | "VOTER_ID" | "PASSPORT" | "EMPLOYMENT_HISTORY" | "ECOURTS_SEARCH" | "FACE";
+export type WorkerCheckKind = "PAN" | "DRIVING_LICENSE" | "RC_V2" | "VOTER_ID" | "PASSPORT" | "EMPLOYMENT_HISTORY" | "ECOURTS_SEARCH" | "ELECTRICITY_BILL" | "FACE";
 
 /**
  * What a worker can choose to verify. Each choice needs one consent item and,
  * for FACE, a verified Aadhaar (the photo face match compares against).
+ * VEHICLE_CHALLAN takes no input: it runs on the vehicle number from the RC check.
  */
-export type SelectableCheck = "AADHAAR" | WorkerCheckKind;
+export type SelectableCheck = "AADHAAR" | "VEHICLE_CHALLAN" | WorkerCheckKind;
 export const SELECTABLE_CHECKS: Record<SelectableCheck, { types: VerificationType[]; consent: string; requires?: SelectableCheck }> = {
   // Ordered by importance: what every worker has first, the rarer documents last.
   AADHAAR: { types: ["AADHAAR"], consent: "identity" },
@@ -19,7 +20,9 @@ export const SELECTABLE_CHECKS: Record<SelectableCheck, { types: VerificationTyp
   DRIVING_LICENSE: { types: ["DRIVING_LICENSE"], consent: "identity" },
   VOTER_ID: { types: ["VOTER_ID"], consent: "identity" },
   RC_V2: { types: ["RC_V2"], consent: "vehicle" },
+  VEHICLE_CHALLAN: { types: ["VEHICLE_CHALLAN"], consent: "vehicle", requires: "RC_V2" },
   ECOURTS_SEARCH: { types: ["ECOURTS_SEARCH"], consent: "court" },
+  ELECTRICITY_BILL: { types: ["ELECTRICITY_BILL"], consent: "address" },
   EMPLOYMENT_HISTORY: { types: ["EMPLOYMENT_HISTORY"], consent: "employment" },
   PASSPORT: { types: ["PASSPORT"], consent: "identity" }
 };
@@ -36,6 +39,7 @@ export const CHECK_TYPES_FOR: Record<WorkerCheckKind, VerificationType[]> = {
   PASSPORT: ["PASSPORT"],
   EMPLOYMENT_HISTORY: ["EMPLOYMENT_HISTORY"],
   ECOURTS_SEARCH: ["ECOURTS_SEARCH"],
+  ELECTRICITY_BILL: ["ELECTRICITY_BILL"],
   FACE: ["FACE_LIVENESS", "FACE_MATCH"]
 };
 
@@ -82,6 +86,13 @@ export function applyCheckInput(kind: Exclude<WorkerCheckKind, "FACE">, input: R
   if (kind === "EMPLOYMENT_HISTORY") {
     const uan = field(input, "uan", /^\d{12}$/, "Enter your 12-digit UAN");
     return { ...data, employment: { ...data.employment, uan } };
+  }
+  if (kind === "ELECTRICITY_BILL") {
+    const consumerNumber = field(input, "consumerNumber", /^[A-Z0-9-]{4,30}$/, "Enter the consumer number printed on your electricity bill",
+      // Consumer numbers can carry hyphens the board expects, so only spaces are removed.
+      (value) => String(value ?? "").toUpperCase().replace(/\s/g, ""));
+    const operatorCode = field(input, "operatorCode", /^[A-Z]{2,5}$/, "Choose your electricity board");
+    return { ...data, addressProof: { consumerNumber, operatorCode } };
   }
   // ECOURTS_SEARCH: the court search needs a father's name and an address.
   const fatherName = data.criminal?.fatherName || personName(input.fatherName, "Enter your father's name");

@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import type { ClientContext } from "../../common/auth/client-context";
 import type { WorkerIdentity } from "../../common/auth/worker-token";
 import type {
@@ -7,7 +7,8 @@ import type {
   ApplicationSchema,
   VerificationType
 } from "../../domain/verification.types";
-import { enabledProducts, isCheckAvailable } from "../../integrations/surepass/products";
+import { isCheckAvailable } from "../../integrations/surepass/products";
+import { VERIFICATION_PROVIDER, VerificationProvider } from "../../integrations/verification-provider";
 import { AadhaarOvseService } from "../aadhaar-ovse/aadhaar-ovse.service";
 import { DigiLockerService } from "../digilocker/digilocker.service";
 import { PrismaService } from "../../common/database/prisma.service";
@@ -30,17 +31,21 @@ import {
   personName
 } from "./worker-case.inputs";
 
-const NEEDS_INPUT = new Set<VerificationType>(["AADHAAR", "PAN", "DRIVING_LICENSE", "RC_V2", "VOTER_ID", "PASSPORT", "EMPLOYMENT_HISTORY", "FACE_LIVENESS", "FACE_MATCH"]);
+const NEEDS_INPUT = new Set<VerificationType>(["AADHAAR", "PAN", "DRIVING_LICENSE", "RC_V2", "VOTER_ID", "PASSPORT", "EMPLOYMENT_HISTORY", "ELECTRICITY_BILL", "FACE_LIVENESS", "FACE_MATCH"]);
 const SELFIE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 /** Checks a DigiLocker document can fill (PAN, licence, RC). */
 const SHAREABLE_TYPES = Object.values(DIGILOCKER_DOCUMENTS).flatMap((spec) => CHECK_TYPES_FOR[spec.check]);
 
 export interface SelfieUpload { buffer: Buffer; originalname: string; mimetype: string; size: number }
 export interface DetailsInput { fullName?: string; dateOfBirth?: string; fatherName?: string; address?: string }
+export interface ElectricityOperator { state: string; operatorCode: string }
 
-/** A selectable check is offered only when every Surepass product behind it is enabled. */
+/** The board list changes rarely; one fetch a day serves every worker. */
+const OPERATORS_TTL_MS = 24 * 60 * 60 * 1000;
+let operatorsCache: { at: number; list: ElectricityOperator[] } | null = null;
+
+/** A selectable check is offered only when a Surepass product can serve every part of it. */
 export function isSelectableAvailable(check: SelectableCheck): boolean {
-  if (check === "AADHAAR") return enabledProducts().has("aadhaar-ovse");
   return SELECTABLE_CHECKS[check].types.every((type) => isCheckAvailable(type));
 }
 
@@ -59,8 +64,24 @@ export class WorkerCaseService {
     @Inject(DigiLockerService) private readonly digilocker: DigiLockerService,
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(DigiLockerCompletion) private readonly completion: DigiLockerCompletion,
-    @Inject(DigiLockerCompletionQueue) private readonly completionQueue: DigiLockerCompletionQueue
+    @Inject(DigiLockerCompletionQueue) private readonly completionQueue: DigiLockerCompletionQueue,
+    @Inject(VERIFICATION_PROVIDER) private readonly provider: VerificationProvider
   ) {}
+
+  /** Electricity boards the worker picks from for the electricity bill check, by state. */
+  async electricityOperators(): Promise<ElectricityOperator[]> {
+    if (!isCheckAvailable("ELECTRICITY_BILL")) return [];
+    if (operatorsCache && Date.now() - operatorsCache.at < OPERATORS_TTL_MS) return operatorsCache.list;
+    const raw = await this.provider.listElectricityOperators();
+    const data = raw.body?.data;
+    if (raw.statusCode >= 400 || !Array.isArray(data)) throw new ServiceUnavailableException("Electricity boards are not available right now. Try again later.");
+    const list = data
+      .map((item) => ({ state: String(item?.state ?? "").trim(), operatorCode: String(item?.operator_code ?? "").trim().toUpperCase() }))
+      .filter((item) => item.state && /^[A-Z]{2,5}$/.test(item.operatorCode))
+      .sort((a, b) => a.state.localeCompare(b.state) || a.operatorCode.localeCompare(b.operatorCode));
+    operatorsCache = { at: Date.now(), list };
+    return list;
+  }
 
   /** Returns the worker's case, opening a draft on first sign-in. */
   async open(worker: WorkerIdentity, client: ClientContext) {
@@ -132,6 +153,7 @@ export class WorkerCaseService {
       consent: { granted: true, purpose: "Worker background verification", textVersion, grantedAt },
       consentItems: required,
       biometricConsent: items.has("face"),
+      addressConsent: items.has("address"),
       criminal: { ...data.criminal, consent: items.has("court") }
     }), { status: "PENDING_VERIFICATION" });
     await this.store.addVerifications(application.id, selected.flatMap((check) => SELECTABLE_CHECKS[check].types).map((type) => ({ type, status: "PENDING" as const })));
@@ -168,6 +190,7 @@ export class WorkerCaseService {
       selectedChecks: [...(data.selectedChecks ?? []), ...added],
       consentItems: [...new Set([...(data.consentItems ?? []), ...needed])],
       biometricConsent: data.biometricConsent || needed.includes("face"),
+      addressConsent: data.addressConsent || needed.includes("address"),
       criminal: { ...data.criminal, consent: data.criminal?.consent || needed.includes("court") }
     }));
     await this.store.addVerifications(application.id, added.flatMap((check) => SELECTABLE_CHECKS[check as SelectableCheck].types).map((type) => ({ type, status: "PENDING" as const })));

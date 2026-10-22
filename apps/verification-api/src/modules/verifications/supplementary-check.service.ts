@@ -15,7 +15,7 @@ export class SupplementaryCheckService {
   list() {
     return Object.entries(supplementaryChecks).map(([type, spec]) => ({
       type, fields: spec.fields, files: "files" in spec ? spec.files : [], consent: spec.consent,
-      execution: "synchronous", reviewRequired: !["NAME_MATCH", "IFSC"].includes(type)
+      execution: "synchronous", reviewRequired: !["NAME_MATCH", "IFSC", "VEHICLE_CHALLAN"].includes(type)
     }));
   }
 

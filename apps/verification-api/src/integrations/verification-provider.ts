@@ -51,4 +51,6 @@ export interface VerificationProvider {
   getAadhaarOvseStatus(clientId: string): Promise<RawProviderResponse>;
   getAadhaarOvseResult(clientId: string): Promise<RawProviderResponse>;
   initializeDigiLocker(payload: DigiLockerInitializeData): Promise<RawProviderResponse>;
+  /** Electricity board codes for ELECTRICITY_BILL (state and operator_code). */
+  listElectricityOperators(): Promise<RawProviderResponse>;
 }

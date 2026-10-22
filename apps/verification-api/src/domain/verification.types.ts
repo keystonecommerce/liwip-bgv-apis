@@ -46,6 +46,8 @@ export interface ApplicationSchema {
   education?: { highestQualification?: string; courseName?: string };
   jobPreferences?: Record<string, unknown>;
   vehicle?: { registrationNumber?: string; [key: string]: unknown };
+  /** Electricity connection the worker gave as proof of address. */
+  addressProof?: { consumerNumber: string; operatorCode: string };
   languages?: Record<string, unknown>;
   jobReadiness?: Record<string, unknown>;
   documents?: {

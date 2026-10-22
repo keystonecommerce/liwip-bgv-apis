@@ -1,7 +1,8 @@
 import { CheckContract, fileRequest } from "../check-contract";
 
+/** Indian passport (back page: file number, address, parents). */
 export const PASSPORT_OCR: CheckContract = {
   type: "PASSPORT_OCR",
-  source: "https://e338ebdbb06e0ec4ec7d11b7a53702dc.apidog.io/international-passport-upload-16301855e0",
-  build: (input, files) => fileRequest("ocr/international-passport", input, files)
+  source: "https://app.surepass.app/docs/kyc/passport-upload-16301854e0",
+  build: (input, files) => fileRequest("ocr/passport", input, files)
 };

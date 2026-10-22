@@ -33,6 +33,12 @@ export class WorkerCaseController {
     return this.cases.open(worker, client);
   }
 
+  /** Boards for the electricity bill check. Empty when the check is not offered. */
+  @Get("electricity-operators")
+  electricityOperators() {
+    return this.cases.electricityOperators();
+  }
+
   @Put("name")
   async saveName(@Body() body: { fullName?: string }, @CurrentWorker() worker: WorkerIdentity, @CurrentClient() client: ClientContext) {
     await this.limit(worker, "caseEditsPerWorker");
