@@ -364,6 +364,8 @@ model ApplicationDocument {
   storageEncryption String?
   kmsKeyArn         String?
   expiresAt         DateTime
+  /// Aadhaar images are kept only masked: when Surepass masked this one and the original was deleted.
+  maskedAt          DateTime?
   uploadedAt        DateTime?
   deletedAt         DateTime?
   createdAt         DateTime    @default(now())

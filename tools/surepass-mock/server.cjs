@@ -1,5 +1,6 @@
 const { createServer } = require('node:http');
 const { randomUUID } = require('node:crypto');
+const MASKED_JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0xff, 0xd9]);
 const SCENARIOS = new Set(['success', 'negative', 'manual', 'rejected', 'malformed', 'invalid_json', 'server_error', 'timeout', 'throttled_once']);
 
 /** Dependency-free, local-only simulator. Never imported by the production app. */
@@ -18,6 +19,8 @@ function createSurepassMock({ token = 'mock_surepass_token', port = 0, timeoutMs
         if (!SCENARIOS.has(input.scenario)) { json(res, 400, { message: 'Unknown scenario', scenarios: [...SCENARIOS] }); return; }
         setScenario(input.scenario); json(res, 200, state()); return;
       }
+      // Where the masked Aadhaar image is downloaded from (Surepass serves it from S3).
+      if (url.pathname === '/__mock/masked-aadhaar.jpg' && req.method === 'GET') { res.writeHead(200, { 'content-type': 'image/jpeg' }); res.end(MASKED_JPEG); return; }
       if (!url.pathname.startsWith('/api/v1/')) { json(res, 404, { success: false, message: 'Unknown mock route' }); return; }
       if (req.headers.authorization !== `Bearer ${token}`) { json(res, 401, { success: false, message: 'Invalid mock bearer token' }); return; }
       totalCalls++; scenarioCalls++;
@@ -68,6 +71,11 @@ function createSurepassMock({ token = 'mock_surepass_token', port = 0, timeoutMs
           profile_image: '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/yQALCAABAAEBAREA/8wABgAQEAX/2gAIAQEAAD8A0s8g/9k='
         });
       }
+      // Document OCR, in the shapes Surepass documents.
+      if (url.pathname.endsWith('/ocr/pan')) body.data.ocr_fields = [{ document_type: 'pan', pan_number: { value: 'ABCPD1234E', confidence: 99 }, full_name: { value: process.env.MOCK_NAME || 'Ravi Kumar', confidence: 97 }, father_name: { value: 'Suresh Kumar', confidence: 95 }, dob: { value: '15/08/1994', confidence: 72 } }];
+      if (url.pathname.endsWith('/ocr/license')) Object.assign(body.data, { document_type: null, license_number: { value: 'KA01 20190001234', confidence: 88 }, dob: { value: '1994-08-15', confidence: 64 }, image_url: null });
+      if (url.pathname.endsWith('/ocr/passport')) body.data.ocr_fields = [{ document_type: 'passport_back', file_num: { value: 'BN1061961923456', confidence: 91 }, father: { value: 'Suresh Kumar', confidence: 90 }, address: { value: '12 MG Road, Bengaluru', confidence: 88 }, pin: { value: '560038', confidence: 93 } }];
+      if (url.pathname.endsWith('/ocr/mask-aadhaar')) body.data.masked_image = `http://${req.headers.host}/__mock/masked-aadhaar.jpg`;
       json(res, 200, body);
     } catch { if (!res.headersSent) json(res, 400, { success: false, message: 'Invalid mock request' }); else res.end(); }
   });

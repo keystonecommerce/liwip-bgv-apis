@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Inject,
   Injectable,
   Logger,
@@ -19,6 +20,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "node:crypto";
 import type { ClientContext } from "../../common/auth/client-context";
 import { PrismaService } from "../../common/database/prisma.service";
+import { AadhaarMasker } from "./aadhaar-masker";
 import {
   ALLOWED_DOCUMENT_CONTENT_TYPES,
   CreateDocumentUploadRequest,
@@ -26,7 +28,7 @@ import {
   DocumentType
 } from "./document-storage.types";
 
-interface StorageConfiguration {
+export interface StorageConfiguration {
   region: string;
   bucket: string;
   kmsKeyArn: string;
@@ -40,7 +42,10 @@ export class DocumentStorageService {
   private readonly logger = new Logger(DocumentStorageService.name);
   private client?: S3Client;
 
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(AadhaarMasker) private readonly masker: AadhaarMasker
+  ) {}
 
   async createUploadUrl(applicationId: string, request: CreateDocumentUploadRequest, client: ClientContext) {
     await this.ensureOwnedApplication(applicationId, client);
@@ -106,6 +111,7 @@ export class DocumentStorageService {
     const document = await this.findOwnedDocument(applicationId, documentId, client);
     if (document.status === "DELETED") throw new ConflictException("This document has been deleted.");
     if (document.status === "UPLOADED") return { document: this.toPublicDocument(document) };
+    if (document.status === "MASKING") throw new ConflictException("This Aadhaar image is still being masked.");
 
     const config = this.configuration();
     let stored;
@@ -136,6 +142,8 @@ export class DocumentStorageService {
       throw new BadRequestException("The uploaded file metadata does not match this document.");
     }
 
+    if (document.documentType === "AADHAAR") return { document: this.toPublicDocument(await this.keepMasked(document, config, stored.VersionId)) };
+
     const updated = await this.prisma.applicationDocument.update({
       where: { id: document.id },
       data: {
@@ -150,6 +158,47 @@ export class DocumentStorageService {
       }
     });
     return { document: this.toPublicDocument(updated) };
+  }
+
+  /**
+   * An Aadhaar image is kept only masked. Surepass masks the upload, the masked copy is stored
+   * next to it, and the original is deleted (that version, so no copy stays in the bucket). If it
+   * cannot be masked the original is deleted all the same and the person uploads again.
+   */
+  private async keepMasked(document: ApplicationDocument, config: StorageConfiguration, rawVersionId?: string) {
+    const claimed = await this.prisma.applicationDocument.updateMany({ where: { id: document.id, status: "PENDING_UPLOAD" }, data: { status: "MASKING" } });
+    if (!claimed.count) throw new ConflictException("This Aadhaar image is already being masked.");
+    const s3 = this.s3(config);
+    const original = { Bucket: document.bucket, Key: document.objectKey, ...(rawVersionId ? { VersionId: rawVersionId } : {}) };
+    try {
+      const raw = await s3.send(new GetObjectCommand(original));
+      const bytes = Buffer.from(await raw.Body!.transformToByteArray());
+      const masked = await this.masker.mask(
+        { buffer: bytes, originalname: document.originalFileName, mimetype: document.contentType },
+        { tenantId: document.tenantId, clientId: document.clientId, applicationId: document.applicationId, documentId: document.id }
+      );
+      const objectKey = `${document.objectKey}-masked`;
+      const put = await s3.send(new PutObjectCommand({
+        Bucket: document.bucket, Key: objectKey, Body: masked.bytes, ContentType: masked.contentType,
+        ServerSideEncryption: "aws:kms", SSEKMSKeyId: config.kmsKeyArn, BucketKeyEnabled: true,
+        Metadata: { document_id: document.id, aadhaar_masked: "true" }
+      }));
+      await s3.send(new DeleteObjectCommand(original));
+      return await this.prisma.applicationDocument.update({
+        where: { id: document.id },
+        data: {
+          status: "UPLOADED", objectKey, contentType: masked.contentType, sizeBytes: masked.bytes.length,
+          versionId: put.VersionId || null, etag: put.ETag?.replaceAll('"', "") || null, checksumSha256: null,
+          storageEncryption: "aws:kms", kmsKeyArn: config.kmsKeyArn, maskedAt: new Date(), uploadedAt: new Date()
+        }
+      });
+    } catch (error) {
+      await s3.send(new DeleteObjectCommand(original)).catch((cleanup) => this.logger.error(`Could not delete the unmasked Aadhaar upload document=${document.id}: ${this.errorName(cleanup)}`));
+      await this.prisma.applicationDocument.update({ where: { id: document.id }, data: { status: "DELETED", deletedAt: new Date() } });
+      if (error instanceof HttpException) throw error;
+      this.logger.warn(`Could not mask Aadhaar document=${document.id}: ${this.errorName(error)}`);
+      throw new ServiceUnavailableException("Secure document storage is temporarily unavailable, so the Aadhaar image was not kept.");
+    }
   }
 
   async list(applicationId: string, client: ClientContext) {
@@ -169,7 +218,7 @@ export class DocumentStorageService {
   /** Also used by the admin panel, which passes the case owner instead of an API key context. */
   async createDownloadUrl(applicationId: string, documentId: string, client: Pick<ClientContext, "tenantId" | "clientId">) {
     const document = await this.findOwnedDocument(applicationId, documentId, client);
-    if (document.status !== "UPLOADED" || document.deletedAt) {
+    if (document.status !== "UPLOADED" || document.deletedAt || (document.documentType === "AADHAAR" && !document.maskedAt)) {
       throw new ConflictException("The document is not available for download.");
     }
     const config = this.configuration();
@@ -276,7 +325,7 @@ export class DocumentStorageService {
     };
   }
 
-  private s3(config: StorageConfiguration): S3Client {
+  protected s3(config: StorageConfiguration): S3Client {
     this.client ||= new S3Client({ region: config.region });
     return this.client;
   }
@@ -308,6 +357,7 @@ export class DocumentStorageService {
       status: document.status,
       checksum_sha256: document.checksumSha256,
       expires_at: document.expiresAt.toISOString(),
+      masked: Boolean(document.maskedAt),
       uploaded_at: document.uploadedAt?.toISOString() || null,
       deleted_at: document.deletedAt?.toISOString() || null,
       created_at: document.createdAt.toISOString(),

@@ -130,6 +130,32 @@ The worker app (`/v1/worker/case`) offers each selectable check only when one of
 
 `GET /v1/worker/case/electricity-operators` returns `{ state, operatorCode }[]` for the board picker (cached for a day; empty when the check is not offered).
 
+### Reading a document photo (pre-fill)
+
+`POST /v1/worker/case/checks/:kind/read` (multipart) reads a photo of the card for a chosen check and returns what to pre-fill. The worker confirms or corrects it, then submits it with `POST checks/:kind` as before. The photo is not stored.
+
+| Check | Product | Files | `fields` returned |
+| --- | --- | --- | --- |
+| PAN | `ocr-pan` | `front` | `panNumber` (and `details`: name, father's name, date of birth) |
+| DRIVING_LICENSE | `ocr-license` | `front`, `back` | `licenceNumber`, `dateOfBirth` |
+| PASSPORT | `ocr-passport` | `front` (the back page, with the file number) | `fileNumber` (and `details`: father's name, address) |
+
+- **Response:** `{ kind, fields, details, lowConfidence, nameMatchesAadhaar }`. `lowConfidence` lists fields Surepass read with confidence below 80, for the worker to check twice. `nameMatchesAadhaar` compares the PAN name with the Aadhaar name.
+- **When it works:** only for a chosen check that has not run yet, after consent, so it is already paid for. JPEG, PNG or PDF up to 5 MB, checked by its bytes.
+- **Limits and ledger:** 10 reads per worker an hour (`LIMIT_DOCUMENT_READS_PER_WORKER_HOUR`). Each read is a provider call on the case's ledger.
+- **When the product is off:** `catalog[].readable` says whether the app may offer the camera. Without the product the route answers 503, and the app shows the typed form.
+- **Voter ID:** voter OCR is not enabled on the production account.
+
+### Aadhaar masking
+
+Aadhaar images are kept only masked. When an `AADHAAR` document upload is confirmed (`POST /v1/applications/:id/documents/:documentId/complete`):
+
+1. The API sends the image to Surepass `ocr/mask-aadhaar`, on the case's ledger.
+2. It fetches the masked copy, but only from `SUREPASS_MASKED_IMAGE_HOSTS` (default `amazonaws.com`, over HTTPS).
+3. It stores the masked copy next to the original, then deletes that version of the original.
+
+The document's `masked` is then `true`. If masking fails, the original is deleted, the document is marked deleted, and the person uploads again (`422` unreadable, `503` unavailable). Downloads of an Aadhaar document that was never masked are refused.
+
 ## Onboarding integration and remaining work
 
 The latest client `lib/onboarding/service.ts` still supplies `mockOnboardingService`. The backend now offers the core APIs and supplementary routes, but this change does not replace that frontend mock or implement its quick-sign-in/unlock/device behavior. Its existing worker multipart submission fields remain compatible.

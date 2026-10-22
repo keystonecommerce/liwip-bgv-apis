@@ -73,10 +73,11 @@ Users can type their details, photograph documents or upload files, and the syst
 - **Today (Built, mostly):**
   - DigiLocker pulls Aadhaar, PAN, licence and RC as signed documents, read with PDF text and Bedrock.
   - Surepass OCR exists for Aadhaar (front, and both sides), PAN, licence and passport, plus Aadhaar masking.
+  - The worker API reads a photo of the PAN, licence or passport and returns the fields to pre-fill (`POST /v1/worker/case/checks/:kind/read`); the photo is not stored. Voter OCR is not enabled on the production account.
+  - Aadhaar images uploaded as documents are masked by Surepass before they are kept; the original is deleted.
   - Documents are stored in private S3 through presigned URLs, and the selfie is captured for face checks.
 - **To build:**
-  - Camera and upload screens in the new flow that call OCR and pre-fill the fields.
-  - Aadhaar masking before any Aadhaar image is stored.
+  - Camera and upload screens in the new flow that call the read route and pre-fill the fields.
   - Move the legacy `/apply` uploads to the presigned flow.
 
 ### R5. Several browser logins per company, company profile, tracking

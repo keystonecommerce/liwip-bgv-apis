@@ -1,4 +1,5 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException, UnprocessableEntityException } from "@nestjs/common";
+import { randomUUID } from "node:crypto";
 import type { ClientContext } from "../../common/auth/client-context";
 import type { WorkerIdentity } from "../../common/auth/worker-token";
 import type {
@@ -7,7 +8,11 @@ import type {
   ApplicationSchema,
   VerificationType
 } from "../../domain/verification.types";
+import { checkedFileType } from "../../domain/file-types";
+import { namesMatch } from "../../domain/name-match";
+import type { CheckFiles } from "../../domain/supplementary-checks";
 import { isCheckAvailable } from "../../integrations/surepass/products";
+import { providerCallContext } from "../usage/provider-call.context";
 import { VERIFICATION_PROVIDER, VerificationProvider } from "../../integrations/verification-provider";
 import { AadhaarOvseService } from "../aadhaar-ovse/aadhaar-ovse.service";
 import { DigiLockerService } from "../digilocker/digilocker.service";
@@ -18,6 +23,7 @@ import { latestRows, queueRow, startReadyChecks } from "./case-rows";
 import { DigiLockerCompletionQueue } from "./digilocker/completion.queue";
 import { DigiLockerCompletion, digiLockerPending } from "./digilocker/completion.service";
 import { DIGILOCKER_DOCUMENTS } from "./digilocker/documents";
+import { READABLE_DOCUMENTS, ReadableKind, canReadDocument, readingFrom } from "./document-reading";
 import {
   CHECK_TYPES_FOR,
   SELECTABLE_CHECKS,
@@ -37,6 +43,9 @@ const SELFIE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const SHAREABLE_TYPES = Object.values(DIGILOCKER_DOCUMENTS).flatMap((spec) => CHECK_TYPES_FOR[spec.check]);
 
 export interface SelfieUpload { buffer: Buffer; originalname: string; mimetype: string; size: number }
+export type DocumentPhoto = SelfieUpload;
+const DOCUMENT_PHOTO_TYPES = ["image/jpeg", "image/png", "application/pdf"] as const;
+const MAX_DOCUMENT_PHOTO_BYTES = 5 * 1024 * 1024;
 export interface DetailsInput { fullName?: string; dateOfBirth?: string; fatherName?: string; address?: string }
 export interface ElectricityOperator { state: string; operatorCode: string }
 
@@ -357,6 +366,43 @@ export class WorkerCaseService {
     return this.view(await this.reload(application.id, owner), owner);
   }
 
+  /**
+   * Reads a photo of the document for one chosen check and returns what to pre-fill. The worker
+   * confirms or corrects it, then submits with POST checks/:kind. The photo is not kept.
+   */
+  async readDocument(worker: WorkerIdentity, client: ClientContext, kind: ReadableKind, photos: { front?: DocumentPhoto; back?: DocumentPhoto }) {
+    const { application, owner } = await this.current(worker, client);
+    this.requireConsent(application);
+    if (!canReadDocument(kind)) throw new ServiceUnavailableException("Reading a photo is not available for this check. Type the details instead.");
+    const rows = await latestRows(this.store, application.id, CHECK_TYPES_FOR[kind]);
+    if (!rows.length) throw new NotFoundException("This check is not one you chose");
+    if (rows.some((row) => row.status !== "PENDING" && row.status !== "FAILED")) throw new ConflictException("This check is already running or done");
+    const spec = READABLE_DOCUMENTS[kind];
+    const files: CheckFiles = {};
+    for (const side of spec.files) {
+      const photo = photos[side];
+      const type = photo ? checkedFileType(photo.buffer, photo.mimetype, DOCUMENT_PHOTO_TYPES) : null;
+      if (!photo || !type || photo.size > MAX_DOCUMENT_PHOTO_BYTES) {
+        throw new BadRequestException(side === "back" ? "Add a photo of the back of the card too (JPEG, PNG or PDF, up to 5 MB)" : "Add a clear photo of the card (JPEG, PNG or PDF, up to 5 MB)");
+      }
+      files[spec.files.length === 1 ? "file" : side] = { buffer: photo.buffer, originalname: `${side}.${type === "application/pdf" ? "pdf" : type.split("/")[1]}`, mimetype: type };
+    }
+    let data: Record<string, unknown> | null | undefined;
+    try {
+      // Recorded against the case like any other provider call.
+      const context = { tenantId: owner.tenantId, clientId: owner.clientId, apiKeyId: owner.apiKeyId, applicationId: application.id, operationKey: `ocr_${application.id}_${randomUUID()}` };
+      data = (await providerCallContext.run(context, () => this.provider.executeCheck(spec.ocr, {}, files))).data;
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === "PROVIDER_PRODUCT_DISABLED" || code === "PROVIDER_UNAVAILABLE") throw new ServiceUnavailableException("We could not read the photo right now. Type the details instead.");
+      throw new UnprocessableEntityException("We could not read this photo. Take a clearer one, or type the details.");
+    }
+    const reading = readingFrom(kind, data);
+    if (!Object.keys(reading.fields).length) throw new UnprocessableEntityException("We could not read this photo. Take a clearer one, or type the details.");
+    const aadhaarName = application.data.personal.nameAsAadhaar;
+    return { ...reading, nameMatchesAadhaar: reading.details.name && aadhaarName ? namesMatch(reading.details.name, aadhaarName) : null };
+  }
+
   /** The Aadhaar photo is the reference image for face match. */
   private async aadhaarPhoto(application: ApplicationRecord, client: ClientContext) {
     const identity = application.data.identity;
@@ -414,6 +460,8 @@ export class WorkerCaseService {
       catalog: (Object.keys(SELECTABLE_CHECKS) as SelectableCheck[]).map((check) => ({
         check,
         available: isSelectableAvailable(check),
+        // The app may offer the camera: a photo of the document pre-fills the details.
+        readable: canReadDocument(check),
         requires: SELECTABLE_CHECKS[check].requires ?? null,
         consent: SELECTABLE_CHECKS[check].consent,
         selected: selected.includes(check)

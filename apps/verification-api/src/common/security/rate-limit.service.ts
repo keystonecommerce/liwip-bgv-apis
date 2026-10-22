@@ -13,6 +13,7 @@ export const LIMITS = {
   passkeySetupPerWorker: { env: "LIMIT_PASSKEY_SETUP_PER_WORKER_HOUR", limit: 5, window: 3600, message: "Too many quick sign-in attempts. Try again later." },
   checkPerWorkerHour: { env: "LIMIT_CHECKS_PER_WORKER_HOUR", limit: 15, window: 3600, message: "You have submitted many checks this hour. Try again later." },
   checkPerWorkerDay: { env: "LIMIT_CHECKS_PER_WORKER_DAY", limit: 40, window: 86400, message: "You have reached today's limit for checks. Try again tomorrow." },
+  documentReadsPerWorkerHour: { env: "LIMIT_DOCUMENT_READS_PER_WORKER_HOUR", limit: 10, window: 3600, message: "You have read many photos this hour. Type the details, or try again later." },
   aadhaarPerWorker: { env: "LIMIT_AADHAAR_PER_WORKER_HOUR", limit: 10, window: 3600, message: "Too many Aadhaar attempts. Try again in an hour." },
   caseEditsPerWorker: { env: "LIMIT_CASE_EDITS_PER_WORKER_HOUR", limit: 30, window: 3600, message: "Too many changes. Try again later." },
   staffOtpSendPerIp: { env: "LIMIT_STAFF_OTP_SEND_PER_IP_HOUR", limit: 20, window: 3600, message: "Too many codes requested from this network. Try again later." },
