@@ -9,6 +9,7 @@ import type {
   VerificationType
 } from "../../domain/verification.types";
 import { checkedFileType } from "../../domain/file-types";
+import { moduleOf } from "../../domain/modules";
 import { namesMatch } from "../../domain/name-match";
 import type { CheckFiles } from "../../domain/supplementary-checks";
 import { isCheckAvailable } from "../../integrations/surepass/products";
@@ -459,6 +460,8 @@ export class WorkerCaseService {
       status: application.status,
       catalog: (Object.keys(SELECTABLE_CHECKS) as SelectableCheck[]).map((check) => ({
         check,
+        // People or Vehicle: the app groups the checks by module.
+        module: moduleOf(SELECTABLE_CHECKS[check].types[0]),
         available: isSelectableAvailable(check),
         // The app may offer the camera: a photo of the document pre-fills the details.
         readable: canReadDocument(check),

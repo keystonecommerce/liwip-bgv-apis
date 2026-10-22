@@ -66,7 +66,7 @@ function ok<T extends { status: number; body: unknown }>(response: T, status = 2
   assert.equal(response.status, status, JSON.stringify(response.body));
   return response;
 }
-function as(staff: Staff, method: "get" | "post" | "delete", path: string) {
+function as(staff: Staff, method: "get" | "post" | "put" | "delete", path: string) {
   let call = api()[method](path).set("Cookie", `${COOKIE}=${staff.token}`).set("Origin", ORIGIN);
   if (method !== "get") call = call.set("x-csrf-token", staff.csrf);
   return call;
@@ -592,6 +592,46 @@ test("Aadhaar masking goes through Surepass on the case's ledger and returns the
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
   }
+});
+test("modules: a case is for a person, a vehicle or both, shown by module and searchable by vehicle number", async () => {
+  const both = `TEST_DRIVER_VEHICLE_${tag}`.toUpperCase(), people = `TEST_PEOPLE_${tag}`.toUpperCase();
+  await db.verificationPackage.create({ data: { id: `pkg_both_${tag}`, code: both, version: 1, name: "Driver with vehicle", checks: [{ type: "PAN", mode: "REQUIRED", execution: "MANUAL" }, { type: "RC_V2", mode: "REQUIRED", execution: "MANUAL" }] } });
+  await db.verificationPackage.create({ data: { id: `pkg_people_${tag}`, code: people, version: 1, name: "People only", checks: [{ type: "PAN", mode: "REQUIRED", execution: "MANUAL" }] } });
+  const vehicleNumber = `KA01${tag.slice(0, 2).toUpperCase().replace(/\d/g, "Z")}${String(Date.now()).slice(-4)}`;
+  const withVehicle = await api().post("/v1/applications").set("x-api-key", partnerA.rawKey).send({ packageCode: both, personal: { panNumber: "ABCDE1234F", nameAsAadhaar: "Driver Test", submittedAddress: "Test Address" }, vehicle: { registrationNumber: vehicleNumber }, consent: { granted: true } });
+  assert.equal(withVehicle.status, 201, JSON.stringify(withVehicle.body));
+  const personOnly = await createCase(partnerA, people);
+
+  // The partner API says which modules a case covers and what it verifies.
+  const details = ok(await api().get(`/v1/applications/${withVehicle.body.id}/verifications`).set("x-api-key", partnerA.rawKey)).body;
+  assert.deepEqual(details.modules, ["PEOPLE", "VEHICLE"]);
+  assert.deepEqual(details.subject, { person: true, vehicle: { registrationNumber: vehicleNumber } });
+  assert.deepEqual(Object.fromEntries(details.verifications.map((check: { type: string; module: string }) => [check.type, check.module])), { PAN: "PEOPLE", RC_V2: "VEHICLE" });
+
+  // The admin case: each check's module, and the report's sections by module.
+  const detail = ok(await as(keystone, "get", `/v1/admin/cases/${withVehicle.body.id}`)).body;
+  assert.deepEqual(detail.subject, { person: true, vehicle: { registrationNumber: vehicleNumber } });
+  assert.deepEqual(detail.modules.map((section: { module: string; checkIds: string[] }) => [section.module, section.checkIds.length]), [["PEOPLE", 1], ["VEHICLE", 1]]);
+  assert.equal(detail.checks.find((check: { type: string }) => check.type === "RC_V2").module, "VEHICLE");
+  const personDetail = ok(await as(keystone, "get", `/v1/admin/cases/${personOnly.id}`)).body;
+  assert.deepEqual(personDetail.subject, { person: true, vehicle: null });
+
+  // Lists filter by module and find a case by its vehicle number.
+  const ids = async (query: string) => (ok(await as(keystone, "get", `/v1/admin/cases?limit=100&${query}`)).body.items as Array<{ id: string }>).map((item) => item.id);
+  const vehicleCases = await ids("module=vehicle");
+  assert.ok(vehicleCases.includes(withVehicle.body.id)); assert.ok(!vehicleCases.includes(personOnly.id));
+  const peopleCases = await ids("module=PEOPLE");
+  assert.ok(peopleCases.includes(withVehicle.body.id) && peopleCases.includes(personOnly.id), "a driver with a vehicle is in both");
+  assert.equal((await as(keystone, "get", "/v1/admin/cases?module=BOAT")).status, 400);
+  assert.deepEqual(await ids(`search=${vehicleNumber.slice(0, 4)} ${vehicleNumber.slice(4)}`), [withVehicle.body.id]);
+  const listed = ok(await as(keystone, "get", `/v1/admin/cases?search=${vehicleNumber}`)).body.items[0];
+  assert.deepEqual(listed.modules, ["PEOPLE", "VEHICLE"]); assert.equal(listed.subject.vehicle.registrationNumber, vehicleNumber);
+
+  // A Vehicle package holds only vehicle checks.
+  assert.equal((await as(keystone, "post", "/v1/admin/packages").send({ code: `VEH_BAD_${tag}`, name: "Bad vehicle", module: "VEHICLE", listPricePaise: 10_000, checks: [{ type: "RC_V2" }, { type: "PAN" }] })).status, 400);
+  const fleet = ok(await as(keystone, "post", "/v1/admin/packages").send({ code: `VEH_${tag}`, name: "Fleet vehicle", module: "VEHICLE", listPricePaise: 10_000, checks: [{ type: "RC_V2" }, { type: "VEHICLE_CHALLAN" }] }), 201).body;
+  assert.equal(fleet.module, "VEHICLE");
+  assert.equal((await as(keystone, "put", `/v1/admin/packages/${fleet.code}/draft`).send({ checks: [{ type: "PAN" }] })).status, 400);
 });
 test("disabled organizations cannot use keys, issue new keys or be silently reactivated", async () => {
   await db.client.update({ where: { id: partnerB.client.id }, data: { status: "INACTIVE" } });

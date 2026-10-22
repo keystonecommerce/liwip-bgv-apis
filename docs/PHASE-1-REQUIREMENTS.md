@@ -160,9 +160,13 @@ Users choose a module first: **People** (identity, address, court, police, emplo
 - **Done when:**
   - A request can be for a person, a vehicle, or both (a driver with their vehicle).
   - Each module has its own checks, packages and report section.
-- **Today (Partial):** vehicle checks (RC, challans) exist only as checks on a person's case, and nothing selects a module.
+- **Today (Partial):**
+  - Every check belongs to a module (`domain/modules.ts`): RC and challans are Vehicle, everything else People.
+  - A case's `modules` and `subject` (the person, and the vehicle by its number) come from its checks. They appear in the partner API, the admin case list and detail, and the report sections by module. The worker catalog gives each check's module.
+  - Admin case lists filter by `module` and find a case by its vehicle number.
+  - A Vehicle package holds only vehicle checks; a People package may add them (a driver with their vehicle).
+  - Every case still has a person: a vehicle number arrives with the person's case.
 - **To build:**
-  - A `module` and a subject on the case (person and/or vehicle).
   - A vehicle-only case for fleet owners (decision D3).
   - Module selection in the app and portal.
 
