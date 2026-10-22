@@ -354,6 +354,86 @@ test("review queue and send-back: Keystone returns a field visit, the agent visi
   assert.equal(decided.decision, "VERIFIED");
   assert.equal(await inQueue(false), undefined, "decided checks leave the queue");
 });
+test("field-task assignment: Keystone assigns, reassigns, sets due dates and cancels; vendor admins assign their own agents", async () => {
+  const code = `TEST_ASSIGN_${tag}`.toUpperCase();
+  await db.verificationPackage.create({ data: { id: `pkg_assign_${tag}`, code, version: 1, name: "Test assignment", checks: [{ type: "CURRENT_ADDRESS", mode: "REQUIRED", execution: "MANUAL" }] } });
+  const first = await createCase(partnerA, code, "Ravi Kumar"), second = await createCase(partnerA, code, "Meena Das");
+  const vendorX = await db.vendor.create({ data: { id: `vendor_x_${tag}`, slug: `vendor-x-${tag}`, name: "Vendor X" } });
+  const vendorY = await db.vendor.create({ data: { id: `vendor_y_${tag}`, slug: `vendor-y-${tag}`, name: "Vendor Y" } });
+  const person = async (key: string, roleKey: string, vendorId: string) => {
+    const user = await db.portalUser.create({ data: { id: `${key}_${tag}`, email: `${key}_${tag}@example.test`, displayName: key } });
+    await db.staffRoleBinding.create({ data: { id: `binding_${key}_${tag}`, userId: user.id, roleKey, scopeType: "VENDOR", scopeKey: `vendor:${vendorId}`, vendorId } });
+    return { id: user.id, session: await staffSession(user.id) };
+  };
+  const agentX1 = await person("agent_x1", "FIELD_AGENT", vendorX.id), agentX2 = await person("agent_x2", "FIELD_AGENT", vendorX.id);
+  const adminX = await person("admin_x", "VENDOR_ADMIN", vendorX.id), agentY = await person("agent_y", "FIELD_AGENT", vendorY.id);
+  ok(await as(keystone, "get", "/v1/admin/field-tasks"));
+  const taskOf = (caseId: string) => db.fieldTask.findFirstOrThrow({ where: { applicationId: caseId } });
+  const one = await taskOf(first.id), two = await taskOf(second.id);
+  const days = (one.dueAt!.getTime() - Date.now()) / 86_400_000;
+  assert.ok(days > 2.9 && days <= 3, `a new visit is due in 3 days (${days})`);
+  const assign = (staff: Staff, taskId: string, body: Record<string, unknown>) => as(staff, "post", `/v1/admin/field-tasks/${taskId}/assign`).send(body);
+  const ids = (items: Array<{ id: string }>) => items.map((item) => item.id);
+
+  // Keystone gives the first visit to an agent at Vendor X, with a due date.
+  const due = new Date(Date.now() + 2 * 86_400_000).toISOString();
+  assert.equal((await assign(agentX1.session, one.id, { vendorId: vendorX.id })).status, 403, "agents cannot assign");
+  assert.equal((await assign(keystone, one.id, { vendorId: vendorX.id, dueAt: new Date(Date.now() - 60_000).toISOString() })).status, 400, "due dates are in the future");
+  assert.equal((await assign(keystone, two.id, { vendorId: vendorY.id, agentId: agentX1.id })).status, 400, "the agent must work for that vendor");
+  const given = ok(await assign(keystone, one.id, { vendorId: vendorX.id, agentId: agentX1.id, dueAt: due })).body;
+  assert.equal(given.status, "ASSIGNED"); assert.equal(given.agent.id, agentX1.id); assert.equal(given.vendor.id, vendorX.id); assert.equal(given.due_at, due);
+  assert.ok(ids(ok(await as(agentX1.session, "get", "/v1/admin/field-tasks/mine")).body.open).includes(one.id));
+  assert.equal((await as(agentX2.session, "get", `/v1/admin/field-tasks/${one.id}`)).status, 404, "another agent cannot see it");
+  ok(await as(agentX1.session, "post", `/v1/admin/field-tasks/${one.id}/accept`));
+  ok(await as(agentX1.session, "post", `/v1/admin/field-tasks/${one.id}/arrive`).send({ latitude: 12.97, longitude: 77.59 }));
+
+  // Vendor X's admin moves it to their other agent, who starts over; they cannot change the vendor or reach other vendors' tasks.
+  assert.equal((await assign(adminX.session, one.id, { vendorId: vendorY.id })).status, 403);
+  assert.equal((await assign(adminX.session, two.id, { agentId: agentX2.id })).status, 404);
+  const moved = ok(await assign(adminX.session, one.id, { agentId: agentX2.id })).body;
+  assert.equal(moved.status, "ASSIGNED"); assert.equal(moved.agent.id, agentX2.id); assert.equal(moved.arrived_at, null); assert.equal(moved.due_at, due, "the due date stays");
+  assert.equal((await as(agentX1.session, "get", `/v1/admin/field-tasks/${one.id}`)).status, 404, "the earlier agent loses it");
+  assert.ok(ids(ok(await as(agentX2.session, "get", "/v1/admin/field-tasks/mine")).body.open).includes(one.id));
+  assert.ok(!ids(ok(await as(adminX.session, "get", "/v1/admin/field-tasks")).body.items).includes(two.id), "a vendor admin sees only their vendor's tasks");
+
+  // Keystone moves it to Vendor Y: no agent yet, so it waits in Vendor Y's pool.
+  const toY = ok(await assign(keystone, one.id, { vendorId: vendorY.id })).body;
+  assert.equal(toY.status, "PENDING_ASSIGNMENT"); assert.equal(toY.agent, null);
+  assert.ok(ids(ok(await as(agentY.session, "get", "/v1/admin/field-tasks/mine")).body.available).includes(one.id));
+
+  // Overdue: open past its due date.
+  await db.fieldTask.update({ where: { id: two.id }, data: { dueAt: new Date(Date.now() - 3_600_000) } });
+  const overdue = ok(await as(keystone, "get", "/v1/admin/field-tasks?view=overdue")).body;
+  assert.ok(ids(overdue.items).includes(two.id)); assert.ok(!ids(overdue.items).includes(one.id));
+  assert.equal(overdue.items.find((item: { id: string }) => item.id === two.id).overdue, true);
+  assert.ok(overdue.counts.overdue >= 1 && overdue.counts.open >= 2 && overdue.counts.noVendor >= 1);
+  assert.equal((await as(keystone, "get", "/v1/admin/field-tasks?view=late")).status, 400);
+
+  // Keystone cancels the second visit: it leaves the open views and the check is ready to decide without it.
+  assert.equal((await as(adminX.session, "post", `/v1/admin/field-tasks/${two.id}/cancel`).send({ reason: "Not needed" })).status, 403);
+  assert.equal((await as(keystone, "post", `/v1/admin/field-tasks/${two.id}/cancel`).send({ reason: "no" })).status, 400);
+  const cancelled = ok(await as(keystone, "post", `/v1/admin/field-tasks/${two.id}/cancel`).send({ reason: "Address confirmed by the partner" })).body;
+  assert.equal(cancelled.status, "CANCELLED"); assert.equal(cancelled.cancel_reason, "Address confirmed by the partner"); assert.equal(cancelled.overdue, false);
+  assert.equal((await as(keystone, "post", `/v1/admin/field-tasks/${two.id}/cancel`).send({ reason: "Again" })).status, 409);
+  assert.ok(ids(ok(await as(keystone, "get", "/v1/admin/field-tasks?view=cancelled")).body.items).includes(two.id));
+  const queued = ok(await as(keystone, "get", "/v1/admin/review-queue")).body.items.find((item: { checkId: string }) => item.checkId === two.verificationId);
+  assert.equal(queued.reason, "Field visit cancelled: Address confirmed by the partner"); assert.equal(queued.ready, true);
+
+  // Keystone can bring it back; a submitted visit can be neither moved nor cancelled.
+  const reopened = ok(await assign(keystone, two.id, { vendorId: vendorX.id, agentId: agentX1.id })).body;
+  assert.equal(reopened.status, "ASSIGNED"); assert.equal(reopened.cancel_reason, null);
+  ok(await as(agentX1.session, "post", `/v1/admin/field-tasks/${two.id}/accept`));
+  ok(await as(agentX1.session, "post", `/v1/admin/field-tasks/${two.id}/submit`).send({ outcome: "PERSON_MET", notes: "Met at home" }));
+  assert.equal((await assign(keystone, two.id, { agentId: agentX2.id })).status, 409);
+  assert.equal((await as(keystone, "post", `/v1/admin/field-tasks/${two.id}/cancel`).send({ reason: "Too late" })).status, 409);
+  assert.ok(ids(ok(await as(keystone, "get", "/v1/admin/field-tasks?view=completed")).body.items).includes(two.id));
+
+  // Deciding a check while its visit is still open closes the visit.
+  ok(await as(keystone, "post", `/v1/admin/cases/${first.id}/checks/${one.verificationId}/decision`).send({ decision: "VERIFIED", note: "Confirmed by phone" }));
+  const closed = await taskOf(first.id);
+  assert.equal(closed.status, "CANCELLED"); assert.equal(closed.cancelReason, "The check was decided without this visit");
+  assert.ok(!ids(ok(await as(agentY.session, "get", "/v1/admin/field-tasks/mine")).body.available).includes(one.id));
+});
 test("disabled organizations cannot use keys, issue new keys or be silently reactivated", async () => {
   await db.client.update({ where: { id: partnerB.client.id }, data: { status: "INACTIVE" } });
   assert.equal((await api().get("/v1/usage").set("x-api-key", partnerB.rawKey)).status, 401);

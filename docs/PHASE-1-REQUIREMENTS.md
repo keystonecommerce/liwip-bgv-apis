@@ -119,13 +119,13 @@ Users can type their details, photograph documents or upload files, and the syst
   - Keystone assigns or reassigns each task to a vendor or to its own team, with a due date.
   - Keystone sees open, overdue and completed tasks.
 - **Today (Partial):**
-  - Address checks waiting in review become `FieldTask`s, and agents pick them from a pool.
-  - Agents belong to the customer's client; there is no vendor organisation.
-  - There is no assignment route and no task type other than address.
+  - Address checks waiting in review become `FieldTask`s, due 3 days later (`FIELD_TASK_DUE_DAYS`).
+  - Vendors are organisations with their own admins and agents; Keystone's own team is one of them.
+  - Keystone assigns, reassigns and cancels tasks and sets due dates; vendor admins assign their own agents (`POST /v1/admin/field-tasks/:id/assign`, `/cancel`).
+  - The task list has open, overdue, completed and cancelled views with counts.
+  - Address is the only task type.
 - **To build:**
-  - A vendor organisation model.
-  - Assign, reassign and cancel routes, due dates and overdue rules.
-  - Police check as a task type.
+  - Police check as a task type (waits on D5).
   - An assignment board in the admin console.
 
 ### R8. Vendors do address and police checks manually and update them in their own login
@@ -145,12 +145,12 @@ Users can type their details, photograph documents or upload files, and the syst
 - **Done when:** a vendor's submission lands on the case for Keystone review; Keystone accepts or sends it back; the case and report update.
 - **Today (Partial):**
   - Submissions already write the evidence onto the check, in review with `qaRequired` set.
-  - Reviewers can decide through `POST /v1/verifications/:id/decision` and the admin case routes.
-  - There is no review queue or UI.
+  - Reviewers can decide through `POST /v1/verifications/:id/decision` and the admin case routes; the case status is recalculated after each decision.
+  - The review queue API (`GET /v1/admin/review-queue`) lists field results, court matches and anything else in review, oldest first.
+  - Keystone sends a submitted visit back to the agent with a note (`POST /v1/admin/field-tasks/:id/send-back`); earlier attempts are kept.
 - **To build:**
-  - A review queue in the admin console: field results, court matches and anything else in review.
-  - Send-back to the vendor.
-  - Re-run the final result after each decision.
+  - The review queue screen in the admin console.
+  - The final result rule and report (R6).
 
 ### R10. People BGV and Vehicle BGV modules
 

@@ -404,6 +404,11 @@ model FieldTask {
   returnCount      Int             @default(0)
   /// Earlier submissions sent back by Keystone: [{ outcome, notes, arrivedAt, location, submittedAt, returnedAt, reviewNote }].
   history          Json            @default("[]")
+  /// When Keystone or the vendor admin last gave the task to an agent.
+  assignedAt       DateTime?
+  /// Set when Keystone cancels the visit (or decides the check without it).
+  cancelledAt      DateTime?
+  cancelReason     String?
   arrivedAt        DateTime?
   arriveLatitude   Float?
   arriveLongitude  Float?
