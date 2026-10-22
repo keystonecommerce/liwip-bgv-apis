@@ -69,10 +69,14 @@ export class ApiKeyGuard implements CanActivate {
       apiKeyId: apiKey!.id,
       scopes: Array.isArray(apiKey!.scopes) ? apiKey!.scopes.map(String) : [],
     };
-    await this.quota.check(apiKey!.clientId);
-    void this.prisma.apiKey
-      .update({ where: { id: apiKey!.id }, data: { lastUsedAt: new Date() } })
-      .catch((error: unknown) => this.logger.warn(`lastUsedAt update failed: ${error instanceof Error ? error.message : String(error)}`));
+    // The worker app's key carries every person's traffic; each person has their own limits (RateLimitService).
+    if (!request.clientContext.scopes.includes("worker:cases")) await this.quota.check(apiKey!.clientId);
+    // At most one write every 5 minutes: one shared key would otherwise rewrite the same row on every request.
+    if (!apiKey!.lastUsedAt || Date.now() - apiKey!.lastUsedAt.getTime() > 5 * 60_000) {
+      void this.prisma.apiKey
+        .update({ where: { id: apiKey!.id }, data: { lastUsedAt: new Date() } })
+        .catch((error: unknown) => this.logger.warn(`lastUsedAt update failed: ${error instanceof Error ? error.message : String(error)}`));
+    }
     return true;
   }
 }

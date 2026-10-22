@@ -110,6 +110,13 @@ const asInputJson = (value: unknown): Prisma.InputJsonValue => value as Prisma.I
 const asNullableJson = (value: unknown): Prisma.InputJsonValue | Prisma.NullTypes.DbNull =>
   value === undefined || value === null ? Prisma.DbNull : asInputJson(value);
 
+/**
+ * A case a person opened in the Liwip app (workerPhone set) is theirs: an API key reaches it only
+ * if that key opened it (the worker app's own program). A partner's keys never read or decide an
+ * invite case through the API; the partner sees it in the admin app, filtered for them.
+ */
+const ownCasesOnly = (owner: ApplicationOwner) => (owner.apiKeyId ? { OR: [{ workerPhone: null }, { apiKeyId: owner.apiKeyId }] } : {});
+
 @Injectable()
 export class VerificationStore {
   private readonly sensitiveInputs = new Map<string, SensitiveVerificationInputs>();
@@ -147,6 +154,8 @@ export class VerificationStore {
           data: types.map((type, index) => ({
             id: verificationIds[index],
             applicationId,
+            tenantId: owner.tenantId,
+            clientId: owner.clientId,
             type,
             status: "QUEUED",
             provider,
@@ -183,7 +192,7 @@ export class VerificationStore {
 
   async getApplication(id: string, owner?: ApplicationOwner): Promise<ApplicationRecord | undefined> {
     const application = await (owner ? withTenantScope(this.prisma, owner) : this.prisma).application.findFirst({
-      where: { id, ...(owner ? { tenantId: owner.tenantId, clientId: owner.clientId } : {}) },
+      where: { id, ...(owner ? { tenantId: owner.tenantId, clientId: owner.clientId, ...ownCasesOnly(owner) } : {}) },
       include: { package: true, verificationCard: true, verifications: { select: { id: true }, orderBy: { createdAt: "asc" } } }
     });
     return application ? this.mapApplication(application) : undefined;
@@ -191,15 +200,16 @@ export class VerificationStore {
 
   async getVerification(id: string, owner?: ApplicationOwner): Promise<VerificationRecord | undefined> {
     const verification = await (owner ? withTenantScope(this.prisma, owner) : this.prisma).verification.findFirst({
-      where: { id, ...(owner ? { application: { tenantId: owner.tenantId, clientId: owner.clientId } } : {}) }
+      where: { id, ...(owner ? { application: { tenantId: owner.tenantId, clientId: owner.clientId, ...ownCasesOnly(owner) } } : {}) }
     });
     return verification ? this.mapVerification(verification) : undefined;
   }
 
   async createSupplementaryVerification(id: string, applicationId: string, type: VerificationType, provider: string, fingerprint: string): Promise<{ created: boolean; verification: VerificationRecord }> {
+    const owner = await this.prisma.application.findUniqueOrThrow({ where: { id: applicationId }, select: { tenantId: true, clientId: true } });
     try {
       const record = await this.prisma.verification.create({ data: {
-        id, applicationId, type, provider, status: "PROCESSING", attemptCount: 1,
+        id, applicationId, tenantId: owner.tenantId, clientId: owner.clientId, type, provider, status: "PROCESSING", attemptCount: 1,
         startedAt: new Date(), result: { requestFingerprint: fingerprint }
       } });
       return { created: true, verification: this.mapVerification(record) };
@@ -360,8 +370,9 @@ export class VerificationStore {
   async addVerifications(applicationId: string, rows: Array<{ type: VerificationType; status: VerificationStatus }>): Promise<void> {
     if (!rows.length) return;
     const provider = process.env.VERIFICATION_PROVIDER || "surepass";
+    const owner = await this.prisma.application.findUniqueOrThrow({ where: { id: applicationId }, select: { tenantId: true, clientId: true } });
     await this.prisma.verification.createMany({ data: rows.map((row) => ({
-      id: `verification_${randomUUID()}`, applicationId, type: row.type, status: row.status, provider, attemptCount: 0
+      id: `verification_${randomUUID()}`, applicationId, tenantId: owner.tenantId, clientId: owner.clientId, type: row.type, status: row.status, provider, attemptCount: 0
     })) });
   }
 
@@ -378,15 +389,17 @@ export class VerificationStore {
     }, owner);
   }
 
+  /** Packages on sale to everyone. A partner's custom bundle is never listed here. */
   async listActivePackages(): Promise<VerificationPackageRecord[]> {
     const packages = await this.prisma.verificationPackage.findMany({
-      where: { isActive: true },
+      where: { isActive: true, tenantId: null },
       orderBy: [{ kind: "asc" }, { displayOrder: "asc" }, { version: "desc" }]
     });
     return packages.map((item) => this.mapPackage(item));
   }
 
-  async getPackageByCode(code: string, version?: number): Promise<VerificationPackageRecord | undefined> {
+  /** A package `tenantId` may use: on sale to everyone, or that partner's own custom bundle. */
+  async getPackageByCode(code: string, version: number | undefined, tenantId: string): Promise<VerificationPackageRecord | undefined> {
     const normalizedCode = code.trim().toUpperCase();
     const item = version
       ? await this.prisma.verificationPackage.findUnique({
@@ -396,6 +409,7 @@ export class VerificationStore {
           where: { code: normalizedCode, isActive: true },
           orderBy: { version: "desc" }
         });
+    if (item?.tenantId && item.tenantId !== tenantId) return undefined;
     return item ? this.mapPackage(item) : undefined;
   }
 

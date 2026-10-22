@@ -11,6 +11,11 @@ export interface WorkerIdentity {
   /** Normalised 91XXXXXXXXXX. */
   phone: string;
   expiresAt: number;
+  /**
+   * Set when the person redeemed a partner's invite in the Liwip worker app: the token is for
+   * the partner's program, not the worker app's own. Only the worker app's key may use it.
+   */
+  invite?: { id: string; tenantSlug: string; clientCode: string };
 }
 
 const VERSION = "w1";
@@ -39,6 +44,7 @@ export function readWorkerToken(token: string | undefined): WorkerIdentity | nul
   try {
     const value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Partial<WorkerIdentity>;
     if (!value.tenantId || !value.clientId || !/^91[6-9]\d{9}$/.test(value.phone || "") || !value.expiresAt || value.expiresAt < Date.now()) return null;
+    if (value.invite !== undefined && (!value.invite?.id || !value.invite.tenantSlug || !value.invite.clientCode)) return null;
     return value as WorkerIdentity;
   } catch {
     return null;

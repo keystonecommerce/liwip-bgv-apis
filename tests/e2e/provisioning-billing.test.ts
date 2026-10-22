@@ -2,7 +2,7 @@ import "reflect-metadata";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
 import { Test } from "@nestjs/testing";
@@ -13,7 +13,8 @@ import { ProviderCallService } from "../../apps/verification-api/src/modules/usa
 import { providerCallContext } from "../../apps/verification-api/src/modules/usage/provider-call.context";
 import { VerificationStore } from "../../apps/verification-api/src/modules/verifications/verification.repository";
 import { withTenantScope } from "../../apps/verification-api/src/common/database/tenant-prisma";
-import { hashPortalPassword } from "../../apps/verification-api/src/modules/portal-auth/password";
+import { PartnerProvisioning } from "../../apps/verification-api/src/common/security/partner-provisioning";
+import { provisionPlatformAdmin } from "../../apps/verification-api/src/modules/admin-access/bootstrap";
 
 let app: INestApplication, db: PrismaClient;
 const { createSurepassMock } = require(resolve(process.cwd(), "tools/surepass-mock/server.cjs"));
@@ -23,7 +24,10 @@ let providerCalls = 0;
 let mode: "success" | "negative" | "malformed" | "rejected" | "server_error" | "manual" | "throttled_once" = "success";
 let modeCalls = 0;
 const tag = randomUUID().replaceAll("-", "");
-const adminKey = `test_admin_${tag}`;
+const ORIGIN = "https://admin.test.liwip.example";
+const COOKIE = "__Host-liwip_admin";
+interface Staff { token: string; csrf: string }
+let keystone: Staff;
 const period = { from: "2026-01-01", to: "2027-01-01" };
 const scopes = ["packages:read", "applications:write", "applications:read", "verifications:retry", "verifications:review", "usage:read", "audit:read", "digilocker:write", "aadhaar:read", "aadhaar:write"];
 const api = () => request(app.getHttpServer());
@@ -44,6 +48,23 @@ async function usage(owner = partnerA) {
   const response = await api().get("/v1/usage").set("x-api-key", owner.rawKey).query(period);
   assert.equal(response.status, 200, JSON.stringify(response.body)); return response.body;
 }
+/** A staff session row for an existing account (sign-in itself is covered by admin-access.test.ts). */
+async function staffSession(userId: string): Promise<Staff> {
+  const user = await db.portalUser.findUniqueOrThrow({ where: { id: userId } });
+  const token = randomBytes(32).toString("base64url");
+  await db.staffSession.create({ data: { id: `staff_session_${randomUUID()}`, userId, tokenHash: createHash("sha256").update(token).digest("hex"), sessionVersion: user.sessionVersion, authMethod: "otp", expiresAt: new Date(Date.now() + 3_600_000) } });
+  const response = await api().get("/v1/admin/auth/session").set("Cookie", `${COOKIE}=${token}`);
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  return { token, csrf: response.body.csrfToken };
+}
+function as(staff: Staff, method: "get" | "post", path: string) {
+  let call = api()[method](path).set("Cookie", `${COOKIE}=${staff.token}`).set("Origin", ORIGIN);
+  if (method === "post") call = call.set("x-csrf-token", staff.csrf);
+  return call;
+}
+const issueKey = (owner: any, body: Record<string, unknown>) => as(keystone, "post", "/v1/admin/api-keys").send({ programId: owner.client.id, ...body });
+const rotateKey = (keyId: string) => as(keystone, "post", `/v1/admin/api-keys/${keyId}/rotate`);
+const revokeKey = (keyId: string) => as(keystone, "post", `/v1/admin/api-keys/${keyId}/revoke`);
 function setMode(next: typeof mode) { mode = next; provider.setScenario(next); }
 const sent = () => provider.state().totalCalls;
 
@@ -55,7 +76,9 @@ before(async () => {
   process.env.DATABASE_URL = databaseUrl;
   process.env.REDIS_HOST = redis.hostname; process.env.REDIS_PORT = redis.port || "6379";
   process.env.NODE_ENV = "production"; process.env.ENABLE_INTERNAL_ROUTES = "false";
-  process.env.ADMIN_API_KEY = adminKey; process.env.PORTAL_AUTH_TOKEN_SECRET = "test_only_secret_longer_than_32_characters";
+  process.env.ADMIN_AUTH_SECRET = "test_only_admin_auth_secret_longer_than_32";
+  process.env.WORKER_TOKEN_SECRET = "test_only_worker_token_secret_longer_than_32";
+  process.env.ADMIN_PANEL_ORIGINS = ORIGIN;
   process.env.THROTTLE_LIMIT = "10000"; process.env.PARTNER_RATE_LIMIT = "10000"; process.env.SUREPASS_BEARER_TOKEN = "test_only_fake_token";
   process.env.SUREPASS_TIMEOUT_MS = "1000";
   process.env.MOCK_NAME = "Test Worker"; // the name the mock returns for identity lookups
@@ -67,11 +90,12 @@ before(async () => {
   const { AppModule } = await import("../../apps/verification-api/src/app.module");
   const module = await Test.createTestingModule({ imports: [AppModule] }).compile();
   app = module.createNestApplication(); app.useLogger(false); await app.init();
-  for (const suffix of ["a", "b"]) {
-    const response = await api().post("/admin/partners").set("x-admin-key", adminKey).send({ tenantSlug: `test_${tag}_${suffix}`, tenantName: `Partner ${suffix}`, clientCode: "SAME_CODE", clientName: `Client ${suffix}`, scopes });
-    assert.equal(response.status, 201, JSON.stringify(response.body));
-    if (suffix === "a") partnerA = response.body; else partnerB = response.body;
-  }
+  // Partners are provisioned the way the scripts do it; keys are then managed over HTTP.
+  const provisioning = new PartnerProvisioning(db);
+  partnerA = await provisioning.createPartner({ tenantSlug: `test_${tag}_a`, tenantName: "Partner a", clientCode: "SAME_CODE", clientName: "Client a", scopes });
+  partnerB = await provisioning.createPartner({ tenantSlug: `test_${tag}_b`, tenantName: "Partner b", clientCode: "SAME_CODE", clientName: "Client b", scopes });
+  const admin = await provisionPlatformAdmin(db, `keystone-prov-${tag}@example.com`, "Keystone Admin");
+  keystone = await staffSession(admin.id);
   packageCode = `TEST_PAN_${tag}`;
   await db.verificationPackage.create({ data: { id: `pkg_${tag}`, code: packageCode.toUpperCase(), version: 1, name: "Test identity", checks: [{ type: "PAN", mode: "REQUIRED", execution: "AUTO" }] } });
 });
@@ -80,14 +104,15 @@ after(async () => { if (app) await app.close(); if (db) await db.$disconnect(); 
 test("provisioning returns raw keys once and listings never expose digests", async () => {
   assert.ok(partnerA.rawKey.startsWith("gv_"));
   assert.equal(partnerA.apiKey.keyHash, undefined);
-  const list = await api().get("/admin/partners").set("x-admin-key", adminKey);
+  const list = await as(keystone, "get", "/v1/admin/api-keys");
   assert.equal(list.status, 200); assert.ok(!JSON.stringify(list.body).includes(partnerA.rawKey)); assert.ok(!JSON.stringify(list.body).includes('"keyHash"'));
   const key = await db.apiKey.findUniqueOrThrow({ where: { id: partnerA.apiKey.id } });
   assert.notEqual(key.keyHash, partnerA.rawKey); assert.equal(key.keyHash.length, 64);
 });
 test("missing/invalid admin and partner credentials fail closed", async () => {
-  assert.equal((await api().get("/admin/usage")).status, 401);
-  assert.equal((await api().get("/admin/usage").set("x-admin-key", "wrong")).status, 401);
+  assert.equal((await api().get("/v1/admin/usage")).status, 401);
+  assert.equal((await api().get("/v1/admin/usage").set("Cookie", `${COOKIE}=wrong`)).status, 401);
+  assert.equal((await api().get("/admin/usage").set("x-admin-key", "anything")).status, 404, "the shared admin key routes are gone");
   assert.equal((await api().get("/v1/usage")).status, 401);
   assert.equal((await api().get("/v1/usage").set("x-api-key", "wrong")).status, 401);
   const before = sent();
@@ -95,7 +120,7 @@ test("missing/invalid admin and partner credentials fail closed", async () => {
   assert.equal(sent(), before);
 });
 test("scope and payload failures never dispatch or bill", async () => {
-  const issued = await api().post(`/admin/clients/${partnerA.client.id}/keys`).set("x-admin-key", adminKey).send({});
+  const issued = await issueKey(partnerA, { scopes: ["packages:read"] });
   assert.deepEqual(issued.body.apiKey.scopes, ["packages:read"]);
   const before = sent();
   assert.equal((await api().get("/v1/usage").set("x-api-key", issued.body.rawKey)).status, 403);
@@ -198,42 +223,42 @@ test("finalized ledger evidence cannot be changed or deleted", async () => {
   await assert.rejects(db.providerCall.delete({ where: { id: row.id } }));
 });
 test("usage periods reject malformed/reversed dates and exclude calls on the end boundary", async () => {
-  for (const query of [{ from: "junk", to: "2027-01-01" }, { from: "2026-02-30", to: "2027-01-01" }, { from: "2026-11-01", to: "2026-01-01" }]) assert.equal((await api().get("/admin/usage").set("x-admin-key", adminKey).query(query)).status, 400);
+  for (const query of [{ from: "junk", to: "2027-01-01" }, { from: "2026-02-30", to: "2027-01-01" }, { from: "2026-11-01", to: "2026-01-01" }]) assert.equal((await as(keystone, "get", "/v1/admin/usage").query(query)).status, 400);
   const when = new Date("2026-05-01T00:00:00Z"), id = `boundary_${tag}`;
   await db.providerCall.create({ data: { id, tenantId: partnerB.tenant.id, clientId: partnerB.client.id, operationKey: id, provider: "fake", operation: "/boundary", state: "SUCCESS", httpStatus: 200, completedAt: when, startedAt: when } });
   const excluded = await api().get("/v1/usage").set("x-api-key", partnerB.rawKey).query({ from: "2026-04-01", to: "2026-05-01" }); assert.equal(excluded.body.totalSuccessfulApiCalls, 0);
   const included = await api().get("/v1/usage").set("x-api-key", partnerB.rawKey).query({ from: "2026-05-01", to: "2026-05-02" }); assert.equal(included.body.totalSuccessfulApiCalls, 1);
 });
 test("concurrent key rotation leaves one replacement; old key immediately fails", async () => {
-  const issued = await api().post(`/admin/clients/${partnerA.client.id}/keys`).set("x-admin-key", adminKey).send({ scopes: ["usage:read"], expiresInDays: 30 });
-  const results = await Promise.all(Array.from({ length: 4 }, () => api().post(`/admin/keys/${issued.body.apiKey.id}/rotate`).set("x-admin-key", adminKey)));
-  assert.equal(results.filter(r => r.status === 201).length, 1); assert.equal(results.filter(r => r.status === 409).length, 3);
+  const issued = await issueKey(partnerA, { scopes: ["usage:read"], expiresInDays: 30 });
+  const results = await Promise.all(Array.from({ length: 4 }, () => rotateKey(issued.body.apiKey.id)));
+  assert.equal(results.filter(r => r.status === 200).length, 1); assert.equal(results.filter(r => r.status === 409).length, 3);
   assert.equal((await api().get("/v1/usage").set("x-api-key", issued.body.rawKey)).status, 401);
-  const replacement = results.find(r => r.status === 201)!.body;
+  const replacement = results.find(r => r.status === 200)!.body;
   assert.equal((await api().get("/v1/usage").set("x-api-key", replacement.rawKey)).status, 200);
   assert.deepEqual(replacement.apiKey.scopes, ["usage:read"]); assert.equal(replacement.apiKey.expiresAt, issued.body.apiKey.expiresAt);
 });
 test("revocation is idempotent, audited once, and rejects further rotation", async () => {
-  const issued = await api().post(`/admin/clients/${partnerA.client.id}/keys`).set("x-admin-key", adminKey).send({ scopes: ["usage:read"] });
-  for (let n = 0; n < 2; n++) assert.equal((await api().post(`/admin/keys/${issued.body.apiKey.id}/revoke`).set("x-admin-key", adminKey)).status, 201);
+  const issued = await issueKey(partnerA, { scopes: ["usage:read"] });
+  for (let n = 0; n < 2; n++) assert.equal((await revokeKey(issued.body.apiKey.id)).status, 200);
   assert.equal(await db.auditLog.count({ where: { action: "apiKey.revoke", apiKeyId: issued.body.apiKey.id } }), 1);
   assert.equal((await api().get("/v1/usage").set("x-api-key", issued.body.rawKey)).status, 401);
-  assert.equal((await api().post(`/admin/keys/${issued.body.apiKey.id}/rotate`).set("x-admin-key", adminKey)).status, 409);
+  assert.equal((await rotateKey(issued.body.apiKey.id)).status, 409);
 });
 test("invalid scope/expiry input is rejected before any key is created", async () => {
   const before = await db.apiKey.count({ where: { clientId: partnerA.client.id } });
-  for (const body of [{ scopes: [] }, { scopes: "usage:read" }, { scopes: [123] }, { scopes: ["*"] }, { expiresInDays: 0 }, { expiresInDays: 1.5 }, { expiresInDays: 1000000 }]) assert.equal((await api().post(`/admin/clients/${partnerA.client.id}/keys`).set("x-admin-key", adminKey).send(body)).status, 400);
+  for (const body of [{ scopes: [] }, { scopes: "usage:read" }, { scopes: [123] }, { scopes: ["*"] }, { scopes: ["usage:read"], expiresInDays: 0 }, { scopes: ["usage:read"], expiresInDays: 1.5 }, { scopes: ["usage:read"], expiresInDays: 1000000 }]) assert.equal((await issueKey(partnerA, body)).status, 400, JSON.stringify(body));
   assert.equal(await db.apiKey.count({ where: { clientId: partnerA.client.id } }), before);
 });
 test("audit failure rolls back key rotation, preserving the old credential", async () => {
-  const issued = await api().post(`/admin/clients/${partnerA.client.id}/keys`).set("x-admin-key", adminKey).send({ scopes: ["usage:read"] });
+  const issued = await issueKey(partnerA, { scopes: ["usage:read"] });
   // Dedicated test DB fault injection, targeted to this unique test client only.
   const client = partnerA.client.id; assert.match(client, /^client_[a-f0-9-]+$/);
   await db.$executeRawUnsafe(`CREATE FUNCTION test_fail_rotation_${tag}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW."action" = 'apiKey.rotate' AND NEW."clientId" = '${client}' THEN RAISE EXCEPTION 'test audit failure'; END IF; RETURN NEW; END $$`);
   await db.$executeRawUnsafe(`CREATE TRIGGER test_fail_rotation_${tag} BEFORE INSERT ON "AuditLog" FOR EACH ROW EXECUTE FUNCTION test_fail_rotation_${tag}()`);
   const before = await db.apiKey.count({ where: { clientId: client } });
   try {
-    assert.equal((await api().post(`/admin/keys/${issued.body.apiKey.id}/rotate`).set("x-admin-key", adminKey)).status, 500);
+    assert.equal((await rotateKey(issued.body.apiKey.id)).status, 500);
     assert.equal(await db.apiKey.count({ where: { clientId: client } }), before);
     assert.equal((await db.apiKey.findUniqueOrThrow({ where: { id: issued.body.apiKey.id } })).isActive, true);
     assert.equal((await api().get("/v1/usage").set("x-api-key", issued.body.rawKey)).status, 200);
@@ -247,28 +272,38 @@ test("field evidence returns to the same case for QA and does not increase API b
   const code = `TEST_FIELD_${tag}`;
   await db.verificationPackage.create({ data: { id: `pkg_field_${tag}`, code: code.toUpperCase(), version: 1, name: "Test field", checks: [{ type: "CURRENT_ADDRESS", mode: "REQUIRED", execution: "MANUAL" }] } });
   const a = await createCase(partnerA, code), b = await createCase(partnerB, code);
-  const agentId = `agent_${tag}`, email = `agent_${tag}@example.test`, password = "test_password_123";
-  await db.portalUser.create({ data: { id: agentId, email, displayName: "Test Agent", passwordHash: await hashPortalPassword(password), role: "FIELD_AGENT", tenantId: partnerA.tenant.id, clientId: partnerA.client.id } });
-  const login = await api().post("/v1/portal-auth/login").send({ email, password }); assert.equal(login.status, 201);
-  const auth = `Bearer ${login.body.accessToken}`;
-  const list = await api().get("/v1/field/tasks").set("authorization", auth); assert.equal(list.status, 200); assert.equal(list.body.available.length, 1);
+  // A field agent of one vendor, on an ordinary staff session (no password login).
+  const vendor = await db.vendor.create({ data: { id: `vendor_${tag}`, slug: `vendor-${tag}`, name: "Test Field Vendor" } });
+  const agent = await db.portalUser.create({ data: { id: `agent_${tag}`, email: `agent_${tag}@example.test`, displayName: "Test Agent" } });
+  await db.staffRoleBinding.create({ data: { id: `binding_agent_${tag}`, userId: agent.id, roleKey: "FIELD_AGENT", scopeType: "VENDOR", scopeKey: `vendor:${vendor.id}`, vendorId: vendor.id } });
+  const agentSession = await staffSession(agent.id);
+  // Keystone sees every task and hands A's visit to the vendor; B's stays with no vendor.
+  const all = await as(keystone, "get", "/v1/admin/field-tasks"); assert.equal(all.status, 200, JSON.stringify(all.body));
+  const taskA = await db.fieldTask.findFirstOrThrow({ where: { applicationId: a.id } });
+  const taskB = await db.fieldTask.findFirstOrThrow({ where: { applicationId: b.id } });
+  assert.equal((await as(agentSession, "get", "/v1/admin/field-tasks/mine")).body.available.length, 0, "no vendor yet: no agent sees it");
+  assert.equal((await as(agentSession, "post", `/v1/admin/field-tasks/${taskA.id}/vendor`).send({ vendorId: vendor.id })).status, 403, "agents cannot hand out tasks");
+  assert.equal((await as(keystone, "post", `/v1/admin/field-tasks/${taskA.id}/vendor`).send({ vendorId: vendor.id })).status, 200);
+  const list = await as(agentSession, "get", "/v1/admin/field-tasks/mine"); assert.equal(list.status, 200);
+  assert.deepEqual(list.body.available.map((item: { id: string }) => item.id), [taskA.id]);
+  assert.equal((await as(agentSession, "get", `/v1/admin/field-tasks/${taskB.id}`)).status, 404, "another partner's visit stays hidden");
   const task = list.body.available[0];
-  assert.equal(await db.fieldTask.count({ where: { applicationId: b.id } }), 0); // request-scoped sync cannot mutate B
   const before = (await usage()).totalSuccessfulApiCalls;
-  assert.equal((await api().post(`/v1/field/tasks/${task.id}/accept`).set("authorization", auth)).status, 201);
-  assert.equal((await api().post(`/v1/field/tasks/${task.id}/submit`).set("authorization", auth).send({ outcome: "PERSON_MET", notes: "Evidence for QA" })).status, 201);
+  assert.equal((await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/accept`)).status, 200);
+  assert.equal((await as(keystone, "post", `/v1/admin/field-tasks/${task.id}/vendor`).send({ vendorId: null })).status, 409, "an accepted task keeps its vendor");
+  assert.equal((await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/submit`).send({ outcome: "PERSON_MET", notes: "Evidence for QA" })).status, 200);
   const pending = await db.application.findUniqueOrThrow({ where: { id: a.id }, include: { verificationCard: true, verifications: true } });
   assert.equal(pending.status, "MANUAL_REVIEW"); assert.equal(pending.verificationCard, null);
   assert.equal((await usage()).totalSuccessfulApiCalls, before);
   const decision = await api().post(`/v1/verifications/${pending.verifications[0].id}/decision`).set("x-api-key", partnerA.rawKey).send({ decision: "VERIFIED", note: "QA approved evidence" });
   assert.equal(decision.status, 201); assert.equal(decision.body.status, "VERIFIED"); assert.equal(decision.body.card.status, "ACTIVE");
   assert.equal((await usage()).totalSuccessfulApiCalls, before);
-  assert.equal((await api().post(`/v1/field/tasks/${task.id}/accept`).set("authorization", auth)).status, 400);
+  assert.equal((await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/accept`)).status, 400);
 });
 test("disabled organizations cannot use keys, issue new keys or be silently reactivated", async () => {
   await db.client.update({ where: { id: partnerB.client.id }, data: { status: "INACTIVE" } });
   assert.equal((await api().get("/v1/usage").set("x-api-key", partnerB.rawKey)).status, 401);
-  assert.equal((await api().post(`/admin/clients/${partnerB.client.id}/keys`).set("x-admin-key", adminKey).send({})).status, 403);
-  assert.equal((await api().post("/admin/partners").set("x-admin-key", adminKey).send({ tenantSlug: partnerB.tenant.slug, tenantName: "Changed", clientCode: partnerB.client.code, clientName: "Changed" })).status, 403);
+  assert.equal((await issueKey(partnerB, { scopes: ["usage:read"] })).status, 403);
+  await assert.rejects(new PartnerProvisioning(db).createPartner({ tenantSlug: partnerB.tenant.slug, tenantName: "Changed", clientCode: partnerB.client.code, clientName: "Changed" }));
   assert.equal((await db.client.findUniqueOrThrow({ where: { id: partnerB.client.id } })).status, "INACTIVE");
 });

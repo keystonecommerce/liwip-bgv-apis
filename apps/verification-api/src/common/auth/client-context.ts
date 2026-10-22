@@ -7,6 +7,11 @@ export interface ClientContext {
   clientCode: string;
   apiKeyId: string;
   scopes: string[];
+  /**
+   * The worker app acting for a partner's program after an invite was redeemed. Records that tie a
+   * key to its own program (cases, provider calls) then carry no key id.
+   */
+  actingForInvite?: string;
 }
 
 export type RequestWithClient = Request & { clientContext?: ClientContext };
