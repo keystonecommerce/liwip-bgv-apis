@@ -447,6 +447,8 @@ model FieldEvidence {
   capturedLongitude Float?
   capturedAt        DateTime?
   uploadedAt        DateTime?
+  /// The agent who took it. A visit counts only its own agent's evidence, from after the last send-back.
+  uploadedByUserId  String?
   deletedAt         DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt

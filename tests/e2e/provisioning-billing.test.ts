@@ -1,7 +1,9 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
@@ -61,10 +63,24 @@ function ok<T extends { status: number; body: unknown }>(response: T, status = 2
   assert.equal(response.status, status, JSON.stringify(response.body));
   return response;
 }
-function as(staff: Staff, method: "get" | "post", path: string) {
+function as(staff: Staff, method: "get" | "post" | "delete", path: string) {
   let call = api()[method](path).set("Cookie", `${COOKIE}=${staff.token}`).set("Origin", ORIGIN);
-  if (method === "post") call = call.set("x-csrf-token", staff.csrf);
+  if (method !== "get") call = call.set("x-csrf-token", staff.csrf);
   return call;
+}
+// Smallest files that pass the image checks: a JPEG photo and a PNG signature.
+const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+const AT_HOME = { latitude: "12.97", longitude: "77.59" };
+function addEvidence(staff: Staff, taskId: string, kind: string, fields: Record<string, string> = kind === "PHOTO" ? AT_HOME : {}, file = kind === "SIGNATURE" ? PNG : JPEG, contentType = kind === "SIGNATURE" ? "image/png" : "image/jpeg") {
+  let call = as(staff, "post", `/v1/admin/field-tasks/${taskId}/evidence`).field("kind", kind);
+  for (const [key, value] of Object.entries(fields)) call = call.field(key, value);
+  return call.attach("file", file, { filename: kind === "SIGNATURE" ? "signature.png" : "house.jpg", contentType });
+}
+/** What a visit needs before it is submitted: a photo, and a signature when someone was met. */
+async function evidenceFor(staff: Staff, taskId: string, outcome: string) {
+  ok(await addEvidence(staff, taskId, "PHOTO"), 201);
+  if (outcome === "PERSON_MET" || outcome === "FAMILY_MET") ok(await addEvidence(staff, taskId, "SIGNATURE"), 201);
 }
 const issueKey = (owner: any, body: Record<string, unknown>) => as(keystone, "post", "/v1/admin/api-keys").send({ programId: owner.client.id, ...body });
 const rotateKey = (keyId: string) => as(keystone, "post", `/v1/admin/api-keys/${keyId}/rotate`);
@@ -85,6 +101,7 @@ before(async () => {
   process.env.ADMIN_PANEL_ORIGINS = ORIGIN;
   process.env.THROTTLE_LIMIT = "10000"; process.env.PARTNER_RATE_LIMIT = "10000"; process.env.SUREPASS_BEARER_TOKEN = "test_only_fake_token";
   process.env.SUREPASS_TIMEOUT_MS = "1000";
+  process.env.FIELD_EVIDENCE_LOCAL_DIR = mkdtempSync(join(tmpdir(), "field-evidence-"));
   process.env.MOCK_NAME = "Test Worker"; // the name the mock returns for identity lookups
   execFileSync(process.execPath, ["node_modules/prisma/build/index.js", "migrate", "deploy"], { env: process.env, stdio: "pipe" });
   db = new PrismaClient();
@@ -295,6 +312,7 @@ test("field evidence returns to the same case for QA and does not increase API b
   const before = (await usage()).totalSuccessfulApiCalls;
   assert.equal((await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/accept`)).status, 200);
   assert.equal((await as(keystone, "post", `/v1/admin/field-tasks/${task.id}/vendor`).send({ vendorId: null })).status, 409, "an accepted task keeps its vendor");
+  await evidenceFor(agentSession, task.id, "PERSON_MET");
   assert.equal((await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/submit`).send({ outcome: "PERSON_MET", notes: "Evidence for QA" })).status, 200);
   const pending = await db.application.findUniqueOrThrow({ where: { id: a.id }, include: { verificationCard: true, verifications: true } });
   assert.equal(pending.status, "MANUAL_REVIEW"); assert.equal(pending.verificationCard, null);
@@ -326,6 +344,7 @@ test("review queue and send-back: Keystone returns a field visit, the agent visi
   ok(await as(keystone, "post", `/v1/admin/field-tasks/${task.id}/vendor`).send({ vendorId: vendor.id }));
   ok(await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/accept`));
   ok(await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/arrive`).send({ latitude: 12.97, longitude: 77.59 }));
+  await evidenceFor(agentSession, task.id, "NEIGHBOUR_CONFIRMED");
   ok(await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/submit`).send({ outcome: "NEIGHBOUR_CONFIRMED", notes: "Neighbour confirmed, house locked" }));
   const submitted = await inQueue(true);
   assert.equal(submitted.ready, true); assert.equal(submitted.reason, "Field visit submitted"); assert.equal(submitted.fieldVisit.vendor.name, "Send-back Vendor");
@@ -347,6 +366,7 @@ test("review queue and send-back: Keystone returns a field visit, the agent visi
 
   // The second visit makes it ready again, then Keystone decides.
   ok(await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/arrive`).send({ latitude: 12.97, longitude: 77.59 }));
+  await evidenceFor(agentSession, task.id, "PERSON_MET");
   ok(await as(agentSession, "post", `/v1/admin/field-tasks/${task.id}/submit`).send({ outcome: "PERSON_MET", notes: "Met Asha at home" }));
   const again = await inQueue(true);
   assert.equal(again.reason, "Field visit submitted again"); assert.equal(again.fieldVisit.timesSentBack, 1);
@@ -423,6 +443,7 @@ test("field-task assignment: Keystone assigns, reassigns, sets due dates and can
   const reopened = ok(await assign(keystone, two.id, { vendorId: vendorX.id, agentId: agentX1.id })).body;
   assert.equal(reopened.status, "ASSIGNED"); assert.equal(reopened.cancel_reason, null);
   ok(await as(agentX1.session, "post", `/v1/admin/field-tasks/${two.id}/accept`));
+  await evidenceFor(agentX1.session, two.id, "PERSON_MET");
   ok(await as(agentX1.session, "post", `/v1/admin/field-tasks/${two.id}/submit`).send({ outcome: "PERSON_MET", notes: "Met at home" }));
   assert.equal((await assign(keystone, two.id, { agentId: agentX2.id })).status, 409);
   assert.equal((await as(keystone, "post", `/v1/admin/field-tasks/${two.id}/cancel`).send({ reason: "Too late" })).status, 409);
@@ -433,6 +454,73 @@ test("field-task assignment: Keystone assigns, reassigns, sets due dates and can
   const closed = await taskOf(first.id);
   assert.equal(closed.status, "CANCELLED"); assert.equal(closed.cancelReason, "The check was decided without this visit");
   assert.ok(!ids(ok(await as(agentY.session, "get", "/v1/admin/field-tasks/mine")).body.available).includes(one.id));
+});
+test("field evidence: photos with GPS and a signature, required to submit, seen by Keystone and the vendor admin only", async () => {
+  const code = `TEST_EVIDENCE_${tag}`.toUpperCase();
+  await db.verificationPackage.create({ data: { id: `pkg_evidence_${tag}`, code, version: 1, name: "Test evidence", checks: [{ type: "CURRENT_ADDRESS", mode: "REQUIRED", execution: "MANUAL" }] } });
+  const created = await createCase(partnerA, code, "Kiran Rao");
+  const vendor = await db.vendor.create({ data: { id: `vendor_ev_${tag}`, slug: `vendor-ev-${tag}`, name: "Evidence Vendor" } });
+  const other = await db.vendor.create({ data: { id: `vendor_ev2_${tag}`, slug: `vendor-ev2-${tag}`, name: "Other Vendor" } });
+  const person = async (key: string, roleKey: string, vendorId: string) => {
+    const user = await db.portalUser.create({ data: { id: `${key}_${tag}`, email: `${key}_${tag}@example.test`, displayName: key } });
+    await db.staffRoleBinding.create({ data: { id: `binding_${key}_${tag}`, userId: user.id, roleKey, scopeType: "VENDOR", scopeKey: `vendor:${vendorId}`, vendorId } });
+    return { id: user.id, session: await staffSession(user.id) };
+  };
+  const agent = await person("ev_agent", "FIELD_AGENT", vendor.id), colleague = await person("ev_colleague", "FIELD_AGENT", vendor.id);
+  const vendorAdmin = await person("ev_admin", "VENDOR_ADMIN", vendor.id), outsider = await person("ev_outsider", "FIELD_AGENT", other.id);
+  ok(await as(keystone, "get", "/v1/admin/field-tasks"));
+  const task = await db.fieldTask.findFirstOrThrow({ where: { applicationId: created.id } });
+  ok(await as(keystone, "post", `/v1/admin/field-tasks/${task.id}/assign`).send({ vendorId: vendor.id, agentId: agent.id }));
+  const submit = (outcome: string) => as(agent.session, "post", `/v1/admin/field-tasks/${task.id}/submit`).send({ outcome });
+  const evidence = (staff: Staff) => as(staff, "get", `/v1/admin/field-tasks/${task.id}/evidence`);
+
+  // Only on an open visit, only images, and photos carry their GPS location.
+  assert.equal((await addEvidence(agent.session, task.id, "PHOTO")).status, 400, "accept first");
+  ok(await as(agent.session, "post", `/v1/admin/field-tasks/${task.id}/accept`));
+  assert.equal((await addEvidence(agent.session, task.id, "VIDEO")).status, 400);
+  assert.equal((await addEvidence(agent.session, task.id, "PHOTO", AT_HOME, Buffer.from("not an image"), "text/plain")).status, 400);
+  assert.equal((await addEvidence(agent.session, task.id, "PHOTO", AT_HOME, PNG, "image/jpeg")).status, 400, "bytes must match the type");
+  assert.equal((await addEvidence(agent.session, task.id, "PHOTO", {})).status, 400, "a photo needs GPS");
+  assert.equal((await addEvidence(agent.session, task.id, "PHOTO", { latitude: "12.97" })).status, 400);
+  assert.equal((await addEvidence(agent.session, task.id, "PHOTO", { latitude: "123", longitude: "77.59" })).status, 400);
+  assert.equal((await addEvidence(colleague.session, task.id, "PHOTO")).status, 404, "another agent's visit");
+
+  // Submitting needs a photo, and a signature when the person was met.
+  assert.match((await submit("PERSON_MET")).body.message, /photo/);
+  const photo = ok(await addEvidence(agent.session, task.id, "PHOTO", { ...AT_HOME, capturedAt: new Date(Date.now() - 60_000).toISOString() }), 201).body;
+  assert.equal(photo.kind, "PHOTO"); assert.deepEqual(photo.location, { latitude: 12.97, longitude: 77.59 }); assert.equal(photo.current, true);
+  assert.match((await submit("PERSON_MET")).body.message, /signature/);
+  const signature = ok(await addEvidence(agent.session, task.id, "SIGNATURE"), 201).body;
+  assert.equal(signature.location, null);
+  const extra = ok(await addEvidence(agent.session, task.id, "PHOTO"), 201).body;
+  ok(await as(agent.session, "delete", `/v1/admin/field-tasks/${task.id}/evidence/${extra.id}`));
+  assert.equal((await as(agent.session, "delete", `/v1/admin/field-tasks/${task.id}/evidence/${extra.id}`)).status, 404);
+
+  // Who sees it: the agent, their vendor's admin and Keystone; not a colleague or another vendor.
+  assert.equal(ok(await as(agent.session, "get", `/v1/admin/field-tasks/${task.id}`)).body.evidence.length, 2);
+  assert.deepEqual(ok(await evidence(vendorAdmin.session)).body.items.map((item: { id: string }) => item.id), [photo.id, signature.id]);
+  assert.equal(ok(await evidence(keystone)).body.items.length, 2);
+  assert.equal((await evidence(colleague.session)).status, 404);
+  assert.equal((await evidence(outsider.session)).status, 404);
+  const file = ok(await as(keystone, "get", photo.file_url).buffer(true));
+  assert.equal(file.headers["content-type"], "image/jpeg"); assert.ok(Buffer.compare(file.body as Buffer, JPEG) === 0);
+  assert.equal((await as(outsider.session, "get", photo.file_url)).status, 404);
+
+  // The submission records its evidence; nothing more can be added once it is in.
+  ok(await submit("PERSON_MET"));
+  const result = (await db.verification.findUniqueOrThrow({ where: { id: task.verificationId } })).result as { evidence: Array<{ id: string }> };
+  assert.deepEqual(result.evidence.map((item) => item.id), [photo.id, signature.id]);
+  assert.equal((await addEvidence(agent.session, task.id, "PHOTO")).status, 400);
+  const queued = ok(await as(keystone, "get", "/v1/admin/review-queue")).body.items.find((item: { checkId: string }) => item.checkId === task.verificationId);
+  assert.equal(queued.fieldVisit.evidenceCount, 2);
+
+  // Sent back, the next visit needs its own photo; the earlier ones stay, marked as an earlier attempt.
+  const returned = ok(await as(keystone, "post", `/v1/admin/field-tasks/${task.id}/send-back`).send({ note: "Photograph the nameplate" })).body;
+  assert.deepEqual(returned.previous_attempts[0].evidenceIds, [photo.id, signature.id]);
+  assert.ok(ok(await evidence(agent.session)).body.items.every((item: { current: boolean }) => !item.current));
+  assert.match((await submit("ADDRESS_EXISTS")).body.message, /photo/);
+  ok(await addEvidence(agent.session, task.id, "PHOTO"), 201);
+  ok(await submit("ADDRESS_EXISTS"));
 });
 test("disabled organizations cannot use keys, issue new keys or be silently reactivated", async () => {
   await db.client.update({ where: { id: partnerB.client.id }, data: { status: "INACTIVE" } });

@@ -5,6 +5,7 @@ import { PrismaService } from "../../common/database/prisma.service";
 import type { ApplicationSchema } from "../../domain/verification.types";
 import { SYSTEM_ROLES } from "../admin-access/admin-permissions";
 import { VerificationStore } from "../verifications/verification.repository";
+import { FieldEvidenceService } from "./field-evidence.service";
 import {
   ArriveInput,
   AssignFieldTaskInput,
@@ -56,7 +57,8 @@ export interface FieldAgent {
 export class FieldTasksService {
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
-    @Inject(VerificationStore) private readonly verifications: VerificationStore
+    @Inject(VerificationStore) private readonly verifications: VerificationStore,
+    @Inject(FieldEvidenceService) private readonly evidence: FieldEvidenceService
   ) {}
 
   // Create a field task for any physical-address check that is awaiting a field visit
@@ -113,7 +115,7 @@ export class FieldTasksService {
 
   async getForAgent(agent: FieldAgent, taskId: string) {
     const task = await this.viewableTask(agent, taskId);
-    return this.toDetail(task);
+    return { ...this.toDetail(task), evidence: task.assignedToUserId === agent.userId ? await this.evidence.forTask(task) : [] };
   }
 
   async accept(agent: FieldAgent, taskId: string) {
@@ -167,6 +169,7 @@ export class FieldTasksService {
     const notes = String(input.notes || "").trim();
     if (notes.length > 1000) throw new BadRequestException("notes must be 1000 characters or fewer");
     const resolution = OUTCOME_RESOLUTION[outcome];
+    const evidenceItems = await this.evidence.forSubmission(task, agent.userId, outcome);
 
     if (resolution === "REVISIT") {
       const updated = await this.prisma.fieldTask.update({
@@ -181,6 +184,7 @@ export class FieldTasksService {
       outcome,
       notes: notes || undefined,
       agentId: agent.userId,
+      evidence: evidenceItems,
       arrivedAt: task.arrivedAt?.toISOString(),
       location:
         task.arriveLatitude != null && task.arriveLongitude != null
@@ -360,6 +364,7 @@ export class FieldTasksService {
       arrivedAt: task.arrivedAt?.toISOString() ?? null,
       location: task.arriveLatitude != null && task.arriveLongitude != null ? { latitude: task.arriveLatitude, longitude: task.arriveLongitude } : null,
       submittedAt: task.submittedAt?.toISOString() ?? null,
+      evidenceIds: await this.evidence.attemptIds(task),
       returnedAt: now.toISOString(),
       reviewNote: note
     };

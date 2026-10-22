@@ -133,11 +133,11 @@ Users can type their details, photograph documents or upload files, and the syst
 - **Done when:** a vendor agent signs in, sees their assigned tasks, visits, records the outcome with photos, signature and GPS, and submits.
 - **Today (Partial):**
   - The field-agent API exists: list tasks, accept, reject, arrive with GPS, submit with an outcome.
-  - The evidence model exists, but there is no upload route.
+  - Agents upload photos with GPS and the signature of the person met (`POST /v1/admin/field-tasks/:id/evidence`). A final outcome needs a photo, and a signature when someone was met. The submission records the evidence on the check.
+  - Keystone and the vendor's admin can see the evidence.
   - There is no police-check flow and no vendor UI.
 - **To build:**
-  - Evidence upload.
-  - Police-check outcome fields: police station, reference number, result and certificate upload.
+  - Police-check outcome fields: police station, reference number, result and certificate upload (waits on D5).
   - A mobile-web vendor portal.
 
 ### R9. Results flow back to Keystone

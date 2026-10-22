@@ -16,7 +16,7 @@ const QUEUE_INCLUDE = {
     }
   },
   fieldTask: {
-    select: { id: true, status: true, outcome: true, submittedAt: true, returnCount: true, dueAt: true, cancelReason: true, vendor: { select: { id: true, name: true } } }
+    select: { id: true, status: true, outcome: true, submittedAt: true, returnCount: true, dueAt: true, cancelReason: true, vendor: { select: { id: true, name: true } }, _count: { select: { evidence: { where: { deletedAt: null } } } } }
   }
 } satisfies Prisma.VerificationInclude;
 
@@ -79,6 +79,7 @@ export class ReviewQueueService {
               submittedAt: row.fieldTask.submittedAt?.toISOString() ?? null,
               dueAt: row.fieldTask.dueAt?.toISOString() ?? null,
               timesSentBack: row.fieldTask.returnCount,
+              evidenceCount: row.fieldTask._count.evidence,
               vendor: row.fieldTask.vendor
             }
           : null

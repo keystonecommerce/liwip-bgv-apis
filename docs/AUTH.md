@@ -155,7 +155,8 @@ The tables below are generated from `apps/verification-api/src/modules/admin-acc
 - **Each task belongs to the vendor Keystone handed it to.** Only that vendor's agents see it. Keystone's own field team is a vendor like any other.
 - **Assignment:** Keystone sets the vendor, the agent and the due date (`POST /v1/admin/field-tasks/:id/assign`), and cancels visits (`/cancel`). A vendor admin gives their vendor's tasks to their own agents with the same route; they cannot change the vendor or the due date. Giving a task to someone else starts it over.
 - **Due dates:** a new visit is due `FIELD_TASK_DUE_DAYS` after it is created (default 3). An open task past its due date is overdue (`?view=overdue`).
-- **Agents work from their own list** (`GET /v1/admin/field-tasks/mine`) and accept, arrive and submit (`/v1/admin/field-tasks/:id/...`).
+- **Agents work from their own list** (`GET /v1/admin/field-tasks/mine`) and accept, arrive, add evidence and submit (`/v1/admin/field-tasks/:id/...`).
+- **Evidence:** photos (with GPS) and the signature of the person met. Only the task's agent adds them, while the visit is open. Keystone, the vendor's admin and that agent can see them; other agents can't. Files go to S3 with the documents KMS key, or to `FIELD_EVIDENCE_LOCAL_DIR` (outside production, `./.data/field-evidence` by default).
 - **Who sees which tasks:** vendor admins see their vendor's tasks (`GET /v1/admin/field-tasks`); Keystone sees every task. The list has counts of open, overdue, completed and cancelled tasks.
 - **Review:** Keystone decides checks from the review queue (`GET /v1/admin/review-queue`, `cases.decide`) or sends a submitted visit back to the agent with a note (`POST /v1/admin/field-tasks/:id/send-back`, Keystone only).
 
