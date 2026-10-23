@@ -3,6 +3,7 @@ import { withTenantScope } from "../../common/database/tenant-prisma";
 import { Inject, Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
+import { newCardNumber } from "../../domain/card-number";
 import {
   ApplicationRecord,
   ApplicationOwner,
@@ -101,15 +102,30 @@ export function workerCardReady(checks: Array<{ status: string; type: string }>)
   return checks.some((check) => check.status === "VERIFIED");
 }
 
-function newCard(applicationId: string, owner: ApplicationOwner, cardNumber: string | null) {
+function newCard(applicationId: string, owner: ApplicationOwner, cardNumber: string) {
   const issuedAt = new Date();
   const expiresAt = new Date(issuedAt);
   expiresAt.setUTCFullYear(expiresAt.getUTCFullYear() + 1);
-  return { id: `card_${randomUUID()}`, applicationId, tenantId: owner.tenantId, clientId: owner.clientId, cardNumber: cardNumber ?? newCardNumber(issuedAt), publicId: randomUUID(), status: "ACTIVE", issuedAt, expiresAt };
+  return { id: `card_${randomUUID()}`, applicationId, tenantId: owner.tenantId, clientId: owner.clientId, cardNumber, publicId: randomUUID(), status: "ACTIVE", issuedAt, expiresAt };
 }
 
-/** Liwip BGV Card number. Format is a placeholder until product confirms it. */
-export const newCardNumber = (at = new Date()) => `LIWIP-${at.getUTCFullYear()}-${randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase()}`;
+type CardNumberDb = Pick<Prisma.TransactionClient, "application" | "verificationCard">;
+
+/**
+ * A card number no case or card holds yet. The numbers are random, so a repeat is possible once
+ * there are many; checking first works inside a transaction, where a failed insert can't be retried.
+ */
+export async function freshCardNumber(db: CardNumberDb, at = new Date()): Promise<string> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const cardNumber = newCardNumber(at);
+    const [application, card] = await Promise.all([
+      db.application.findUnique({ where: { cardNumber }, select: { id: true } }),
+      db.verificationCard.findUnique({ where: { cardNumber }, select: { id: true } })
+    ]);
+    if (!application && !card) return cardNumber;
+  }
+  throw new Error("Could not find an unused card number");
+}
 
 const asInputJson = (value: unknown): Prisma.InputJsonValue => value as Prisma.InputJsonValue;
 const asNullableJson = (value: unknown): Prisma.InputJsonValue | Prisma.NullTypes.DbNull =>
@@ -317,14 +333,14 @@ export class VerificationStore {
         // A worker's card is released once every chosen check has finished (none running or in
         // review), Aadhaar is verified and at least one check passed. It lists the checks that
         // passed. Adding checks later does not take it away; it shows as updating.
-        if (workerCardReady(checks)) await tx.verificationCard.upsert({ where: { applicationId, ...owner }, update: {}, create: newCard(applicationId, owner, assignedCardNumber) });
+        if (workerCardReady(checks)) await tx.verificationCard.upsert({ where: { applicationId, ...owner }, update: {}, create: newCard(applicationId, owner, assignedCardNumber ?? (await freshCardNumber(tx))) });
       } else if (status === "VERIFIED") {
         const issuedAt = new Date();
         const expiresAt = new Date(issuedAt);
         expiresAt.setUTCFullYear(expiresAt.getUTCFullYear() + 1);
         await tx.verificationCard.upsert({ where: { applicationId, ...owner }, update: {}, create: {
           id: `card_${randomUUID()}`, applicationId, ...owner,
-          cardNumber: assignedCardNumber ?? newCardNumber(issuedAt),
+          cardNumber: assignedCardNumber ?? (await freshCardNumber(tx, issuedAt)),
           publicId: randomUUID(), status: "ACTIVE", issuedAt, expiresAt,
         } });
       } else {
@@ -361,7 +377,7 @@ export class VerificationStore {
       const now = new Date();
       await this.prisma.application.create({ data: {
         id: `app_${randomUUID()}`, tenantId: owner.tenantId, clientId: owner.clientId, apiKeyId: owner.apiKeyId,
-        status: "DRAFT", workerPhone, cardNumber: newCardNumber(now), data: asInputJson(data), createdAt: now, updatedAt: now
+        status: "DRAFT", workerPhone, cardNumber: await freshCardNumber(this.prisma, now), data: asInputJson(data), createdAt: now, updatedAt: now
       } });
     } catch (error) {
       if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") throw error;

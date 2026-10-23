@@ -5,7 +5,7 @@ import { AuditService } from "../../common/audit/audit.service";
 import { issueWorkerToken, WorkerIdentity } from "../../common/auth/worker-token";
 import { PrismaService } from "../../common/database/prisma.service";
 import type { ApplicationSchema } from "../../domain/verification.types";
-import { newCardNumber } from "../verifications/verification.repository";
+import { freshCardNumber } from "../verifications/verification.repository";
 import { isSelectableCheck, SELECTABLE_CHECKS, type SelectableCheck } from "../worker-cases/worker-case.inputs";
 import { checkTypesOf, includedChecks } from "./catalog.service";
 import { SeatsService } from "./seats.service";
@@ -94,7 +94,7 @@ export class InviteRedemptionService {
       } else {
         const now = new Date();
         applicationId = `app_${randomUUID()}`;
-        await tx.application.create({ data: { id: applicationId, tenantId: invite.tenantId, clientId: invite.clientId, packageId: pkg.id, status: "DRAFT", workerPhone: worker.phone, cardNumber: newCardNumber(now), data: data as unknown as Prisma.InputJsonValue, createdAt: now, updatedAt: now } });
+        await tx.application.create({ data: { id: applicationId, tenantId: invite.tenantId, clientId: invite.clientId, packageId: pkg.id, status: "DRAFT", workerPhone: worker.phone, cardNumber: await freshCardNumber(tx, now), data: data as unknown as Prisma.InputJsonValue, createdAt: now, updatedAt: now } });
       }
 
       // The seat moves from reserved to used, and the package's checks are paid for on this case.
