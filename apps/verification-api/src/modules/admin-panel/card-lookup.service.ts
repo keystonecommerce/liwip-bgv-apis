@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../common/database/prisma.service";
+import { canonicalCardNumber } from "../../domain/card-number";
 import { hashIp, panelUrl } from "../admin-access/admin-config";
 import { AdminContext } from "../admin-access/admin-context";
 import { hasPermission } from "../admin-access/admin-permissions";
@@ -14,14 +15,13 @@ import { CasesService } from "./cases.service";
 import { Page, oneOf, optionalDate, optionalText, paginated, text } from "./input";
 import { StaffDirectoryService } from "./staff-directory.service";
 
-const CARD_NUMBER = /^[A-Z0-9][A-Z0-9-]{5,39}$/;
 const CARD_INCLUDE = {
   application: { select: { id: true, tenantId: true, data: true, verifications: { select: { type: true, status: true, createdAt: true, completedAt: true, updatedAt: true } } } }
 } satisfies Prisma.VerificationCardInclude;
 
 export const normaliseCardNumber = (value: unknown) => {
-  const cardNumber = String(value ?? "").trim().toUpperCase();
-  if (!CARD_NUMBER.test(cardNumber)) throw new BadRequestException("cardNumber is not valid");
+  const cardNumber = canonicalCardNumber(value);
+  if (!cardNumber) throw new BadRequestException("cardNumber is not valid");
   return cardNumber;
 };
 

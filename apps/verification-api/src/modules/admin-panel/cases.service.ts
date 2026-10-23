@@ -156,6 +156,8 @@ export class CasesService {
       const or: Prisma.ApplicationWhereInput[] = [
         { id: search },
         { cardNumber: { contains: search.toUpperCase() } },
+        // Card numbers are stored without the spaces they are shown with.
+        { cardNumber: { contains: search.toUpperCase().replace(/[\s-]/g, "") } },
         { data: { path: ["identity", "fullName"], string_contains: search } },
         { data: { path: ["personal", "declaredName"], string_contains: search } },
         { data: { path: ["personal", "nameAsAadhaar"], string_contains: search } }
